@@ -1,0 +1,10 @@
+# Backups created by the tool at runtime
+backups/
+*.bak
+
+# OS / editor cruft
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+*.log
