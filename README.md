@@ -1,4 +1,4 @@
-# Bluestacks-Debloat
+# Bluestacks-Debloat WIP DO NOT USE YET
 
 <p align="center">
   <a href="https://github.com/Jordan231111/Bluestacks-Debloat/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/Jordan231111/Bluestacks-Debloat?style=flat&logo=github"></a>
