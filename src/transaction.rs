@@ -548,6 +548,9 @@ pub fn apply(plan: Plan, root: &Path, mut log: impl FnMut(String)) -> Result<Pat
                 "Apply failed. Restoring completed changes: {error:#}"
             ));
             let rollback = restore_entries(&dir, &mut journal, &backend, &mut log);
+            if rollback.is_ok() {
+                crate::backup_cleanup::finish_operation(root, &_lock, &dir, &mut log);
+            }
             bail!(
                 "Apply failed: {error:#}. Rollback: {}. Backup: {}",
                 match rollback {
@@ -561,13 +564,16 @@ pub fn apply(plan: Plan, root: &Path, mut log: impl FnMut(String)) -> Result<Pat
     journal.status = "applied".into();
     if let Err(error) = save(&dir, &journal) {
         let result = restore_entries(&dir, &mut journal, &backend, &mut log);
+        if result.is_ok() {
+            crate::backup_cleanup::finish_operation(root, &_lock, &dir, &mut log);
+        }
         bail!(
             "Could not finalize journal: {error:#}. Rollback: {result:?}. Backup: {}",
             dir.display()
         );
     }
     log(format!("Verified. Backup: {}", dir.display()));
-    crate::backup_cleanup::finish_operation(root, &_lock, &mut log);
+    crate::backup_cleanup::finish_operation(root, &_lock, &dir, &mut log);
     Ok(dir)
 }
 fn restore_entries(

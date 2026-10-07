@@ -507,11 +507,25 @@ pub fn delete(root: &Path, path: &Path) -> Result<()> {
         .context("Select an existing recovery point from this app")?;
     delete_locked(root, &selected)
 }
-fn prune_locked(root: &Path, log: &mut impl FnMut(String)) -> Result<usize> {
+fn prune_locked(
+    root: &Path,
+    current: Option<&Path>,
+    log: &mut impl FnMut(String),
+) -> Result<usize> {
     let mut kept = 0;
     let mut deleted = 0;
     let mut problems = Vec::new();
-    for record in list(root)? {
+    let mut records = list(root)?;
+    // A clock correction must never retire the recovery point just created by this operation.
+    if let Some(current) = current
+        && let Some(index) = records
+            .iter()
+            .position(|record| platform::same_path(&record.path, current))
+    {
+        let record = records.remove(index);
+        records.insert(0, record);
+    }
+    for record in records {
         let result = (|| -> Result<()> {
             if record.status == "Deleting" {
                 delete_locked(root, &record)?;
@@ -552,11 +566,16 @@ fn prune_locked(root: &Path, log: &mut impl FnMut(String)) -> Result<usize> {
 }
 pub fn prune(root: &Path, mut log: impl FnMut(String)) -> Result<usize> {
     let _lock = platform::lock(root)?;
-    prune_locked(root, &mut log)
+    prune_locked(root, None, &mut log)
 }
 /// Caller holds the operation's exclusive lock. Cleanup failure does not undo verified changes.
-pub(crate) fn finish_operation(root: &Path, _guard: &fs::File, log: &mut impl FnMut(String)) {
-    if let Err(error) = prune_locked(root, log) {
+pub(crate) fn finish_operation(
+    root: &Path,
+    _guard: &fs::File,
+    current: &Path,
+    log: &mut impl FnMut(String),
+) {
+    if let Err(error) = prune_locked(root, Some(current), log) {
         log(format!("{error:#}"));
     }
 }
@@ -789,5 +808,112 @@ mod tests {
         assert!(delete(temp.path(), &point).is_err());
         assert!(delete(temp.path(), &orphan).is_err());
         assert_eq!(fs::read(outside).unwrap(), b"preserve");
+    }
+
+    #[test]
+    fn completed_rollback_also_enforces_retention() {
+        use crate::transaction::{Operation, Plan, Target, Value as Stored};
+        if !platform::is_admin() {
+            return;
+        } // Host writes require an administrator token.
+        let temp = tempfile::tempdir().unwrap();
+        for i in 0..3 {
+            point(
+                temp.path(),
+                i,
+                Kind::Debloat,
+                "applied",
+                &format!("2020-01-01T00:00:0{i}Z"),
+            );
+        }
+        let source = temp.path().join("source.txt");
+        let blocked = temp.path().join("readonly.txt");
+        fs::write(&source, b"original").unwrap();
+        fs::write(&blocked, b"protected").unwrap();
+        let original_permissions = blocked.metadata().unwrap().permissions();
+        let mut permissions = original_permissions.clone();
+        permissions.set_readonly(true);
+        fs::set_permissions(&blocked, permissions).unwrap();
+        let plan = Plan {
+            installation: crate::discovery::Installation {
+                install_dir: temp.path().join("install"),
+                data_dir: temp.path().into(),
+                version: "fixture".into(),
+                source: "fixture".into(),
+            },
+            guest: None,
+            title: "Rollback fixture".into(),
+            notes: vec![],
+            operations: vec![
+                Operation {
+                    label: "First write".into(),
+                    target: Target::File {
+                        path: source.clone(),
+                    },
+                    before: Stored::Bytes(b"original".to_vec()),
+                    after: Stored::Bytes(b"changed".to_vec()),
+                },
+                Operation {
+                    label: "Read-only destination".into(),
+                    target: Target::File {
+                        path: blocked.clone(),
+                    },
+                    before: Stored::Bytes(b"protected".to_vec()),
+                    after: Stored::Bytes(b"changed".to_vec()),
+                },
+            ],
+        };
+        let result = transaction::apply(plan, temp.path(), |_| {});
+        fs::set_permissions(&blocked, original_permissions).unwrap();
+        assert!(format!("{:#}", result.unwrap_err()).contains("Rollback: complete"));
+        assert_eq!(fs::read(source).unwrap(), b"original");
+        assert_eq!(fs::read(blocked).unwrap(), b"protected");
+        let records = list(temp.path()).unwrap();
+        assert_eq!(records.len(), KEEP_LATEST);
+        assert!(
+            records
+                .iter()
+                .any(|r| r.title == "Rollback fixture" && r.status == "restored")
+        );
+    }
+
+    #[test]
+    fn current_operation_survives_a_backwards_clock_change() {
+        if !platform::is_admin() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        for i in 0..3 {
+            point(
+                temp.path(),
+                i,
+                Kind::Debloat,
+                "applied",
+                &format!("2099-01-01T00:00:0{i}Z"),
+            );
+        }
+        let live = temp.path().join("current.txt");
+        fs::write(&live, b"before").unwrap();
+        let plan = transaction::Plan {
+            installation: crate::discovery::Installation {
+                install_dir: temp.path().join("install"),
+                data_dir: temp.path().into(),
+                version: "fixture".into(),
+                source: "fixture".into(),
+            },
+            guest: None,
+            title: "Current operation".into(),
+            notes: vec![],
+            operations: vec![transaction::Operation {
+                label: "Current write".into(),
+                target: transaction::Target::File { path: live },
+                before: transaction::Value::Bytes(b"before".to_vec()),
+                after: transaction::Value::Bytes(b"after".to_vec()),
+            }],
+        };
+        let backup = transaction::apply(plan, temp.path(), |_| {}).unwrap();
+        assert!(backup.is_dir());
+        verify(temp.path(), &backup).unwrap();
+        assert_eq!(list(temp.path()).unwrap().len(), KEEP_LATEST);
     }
 }

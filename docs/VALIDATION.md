@@ -6,7 +6,7 @@ Local validation was performed on Windows 10 IoT Enterprise LTSC x64, BlueStacks
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --all-targets -- -D warnings`
-- `cargo test --locked --all-targets`: **37 tests**.
+- `cargo test --locked --all-targets`: **39 tests**.
 - Optimized Windows x64 build with a static MSVC CRT.
 - `cargo audit` (2026-10-07): zero known Rust dependency vulnerabilities. One maintenance advisory remains for the UI's transitive `ttf-parser` 0.25.1 dependency (RUSTSEC-2026-0192); the app uses bundled fonts. This audit does not cover the separate embedded root helper binaries.
 

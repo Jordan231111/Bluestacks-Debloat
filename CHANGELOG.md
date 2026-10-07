@@ -4,6 +4,7 @@
 
 - Clear a previous root verification result when rooting, unrooting, restoring, or checking an operation that fails.
 - Stop automatic root-support retries after an inspection error so the problem stays readable.
+- Enforce the backup limit after a failed apply has been fully rolled back as well.
 
 Includes the visible Apply bar, automatic three-backup retention, and integrity checks from 1.0.1.
 

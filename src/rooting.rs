@@ -797,7 +797,7 @@ pub fn install(
     {
         let _ = fs::remove_dir_all(&work);
     }
-    crate::backup_cleanup::finish_operation(state, &_lock, &mut log);
+    crate::backup_cleanup::finish_operation(state, &_lock, &dir, &mut log);
     result
 }
 const POPULATE: &str = r#"set -e
@@ -871,7 +871,7 @@ pub fn unroot(info: RootInfo, state: &Path, mut log: impl FnMut(String)) -> Resu
             log(format!("Recovery needs attention: {e:#}"));
         }
     }
-    crate::backup_cleanup::finish_operation(state, &_lock, &mut log);
+    crate::backup_cleanup::finish_operation(state, &_lock, &dir, &mut log);
     result
 }
 
@@ -1003,7 +1003,7 @@ pub fn full_unroot(install: Installation, state: &Path, mut log: impl FnMut(Stri
             log(format!("Recovery needs attention: {e:#}"));
         }
     }
-    crate::backup_cleanup::finish_operation(state, &_lock, &mut log);
+    crate::backup_cleanup::finish_operation(state, &_lock, &dir, &mut log);
     result
 }
 pub fn backups(state: &Path) -> Result<Vec<RootBackupInfo>> {
