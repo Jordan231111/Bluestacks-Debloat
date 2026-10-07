@@ -1,4 +1,5 @@
 pub mod adb;
+pub mod backup_cleanup;
 pub mod cloud;
 pub mod config;
 pub mod discovery;

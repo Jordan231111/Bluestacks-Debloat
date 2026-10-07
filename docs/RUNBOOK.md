@@ -8,9 +8,17 @@ For host changes, close all instances and the Multi-instance Manager. **Request 
 
 Choose options, preview, and apply. Changing options or the selected instance invalidates the old preview. A stale underlying value also stops the operation. Successful operations are read back before being reported as verified.
 
+**Review** and **Apply** stay in the fixed bottom bar on Debloat, BlueStacks X, Android apps, and Network. Review does not apply anything. The bar shows pending changes, no changes needed, or a verified completion message. Checkboxes select the next operation; they are not indicators of the installed state.
+
 After cloud removal, start the emulator using **Start selected instance**, an existing BlueStacks 5 shortcut, or `HD-Player.exe --instance NAME`. Test launch, your installed games and Google Play. The X/Store executable and the separate Services companion are not needed to invoke the local player directly.
 
 ## Backups
+
+The app automatically keeps the **newest three verified completed recovery points total**, across normal and root operations. This runs on desktop startup and after changes. Before removing older points, it checks the retained recovery files. Unfinished, unrecognized, or damaged recovery records are reported and protected when they need inspection; these can temporarily exceed the three-point limit. There is no retention setting.
+
+Use **Delete backup** to permanently remove a completed point and its recorded cloud recovery copies. **Check backup integrity** streams each file through SHA-256 and shows missing, truncated, or corrupt content. All recovery files are checked before an explicit restore changes live files. New journals contain their own checksum; v1.0.0 journals remain readable, but their original metadata did not have that checksum.
+
+Cleanup records its exact file list before deletion and resumes an interrupted deletion. Unknown files, links/junctions, unexpected archive paths, and modified cloud recovery folders stop cleanup and remain visible for inspection. Cleanup failures are reported separately from successful configuration changes.
 
 Journals, file backups and UI logs live under `%LOCALAPPDATA%\BluestacksDebloat`. Each operation has a timestamp and UUID, so backups do not overwrite one another. Directory recovery copies live beside their original cloud folder under `.BlueStacksDebloat-backups` to preserve same-volume rename semantics. The journal records their paths.
 

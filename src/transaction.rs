@@ -449,10 +449,7 @@ fn load_value(dir: &Path, value: &Saved) -> Result<Value> {
     }
 }
 fn save(dir: &Path, journal: &Journal) -> Result<()> {
-    platform::atomic_write(
-        &dir.join("journal.json"),
-        &serde_json::to_vec_pretty(journal)?,
-    )
+    platform::write_journal(&dir.join("journal.json"), journal)
 }
 
 pub fn apply(plan: Plan, root: &Path, mut log: impl FnMut(String)) -> Result<PathBuf> {
@@ -570,6 +567,7 @@ pub fn apply(plan: Plan, root: &Path, mut log: impl FnMut(String)) -> Result<Pat
         );
     }
     log(format!("Verified. Backup: {}", dir.display()));
+    crate::backup_cleanup::finish_operation(root, &_lock, &mut log);
     Ok(dir)
 }
 fn restore_entries(
@@ -648,8 +646,14 @@ pub fn restore(dir: &Path, root: &Path, mut log: impl FnMut(String)) -> Result<(
             .is_some_and(|p| platform::same_path(p, &base)),
         "Select a backup created in this application's backup folder"
     );
-    let mut journal: Journal = serde_json::from_slice(&fs::read(dir.join("journal.json"))?)?;
+    let mut journal: Journal =
+        serde_json::from_value(platform::read_journal(&dir.join("journal.json"))?)?;
     ensure!(journal.schema == 1, "Unsupported backup version");
+    ensure!(
+        journal.status != "Deleting",
+        "This recovery point is being deleted and cannot be restored"
+    );
+    crate::backup_cleanup::verify_locked(root, dir)?;
     if journal.guest.is_none() {
         platform::require_admin()?;
         discovery::require_stopped(&journal.installation)?;
@@ -658,25 +662,20 @@ pub fn restore(dir: &Path, root: &Path, mut log: impl FnMut(String)) -> Result<(
     restore_entries(dir, &mut journal, &backend, &mut log)
 }
 pub fn backups(root: &Path) -> Result<Vec<BackupInfo>> {
-    let dir = root.join("backups");
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut result = Vec::new();
-    for e in fs::read_dir(dir)?.flatten() {
-        if let Ok(bytes) = fs::read(e.path().join("journal.json"))
-            && let Ok(j) = serde_json::from_slice::<Journal>(&bytes)
-        {
-            result.push(BackupInfo {
-                path: e.path(),
-                title: j.title,
-                created: j.created,
-                status: j.status,
-            });
-        }
-    }
-    result.sort_by(|a, b| b.created.cmp(&a.created));
-    Ok(result)
+    Ok(crate::backup_cleanup::list(root)?
+        .into_iter()
+        .filter(|record| record.kind == crate::backup_cleanup::Kind::Debloat)
+        .map(|record| BackupInfo {
+            path: record.path,
+            title: record.title,
+            created: record.created,
+            status: if record.problem.is_some() {
+                format!("{} — needs inspection", record.status)
+            } else {
+                record.status
+            },
+        })
+        .collect())
 }
 
 #[cfg(test)]

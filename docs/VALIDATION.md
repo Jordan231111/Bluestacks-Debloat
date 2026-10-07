@@ -6,13 +6,19 @@ Local validation was performed on Windows 10 IoT Enterprise LTSC x64, BlueStacks
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --all-targets -- -D warnings`
-- `cargo test --locked --all-targets`: **29 tests**.
+- `cargo test --locked --all-targets`: **37 tests**.
 - Optimized Windows x64 build with a static MSVC CRT.
 - `cargo audit` (2026-10-07): zero known Rust dependency vulnerabilities. One maintenance advisory remains for the UI's transitive `ttf-parser` 0.25.1 dependency (RUSTSEC-2026-0192); the app uses bundled fonts. This audit does not cover the separate embedded root helper binaries.
 
 Tests cover config byte preservation and stale previews, instance isolation, preserving CPU/RAM in Maximum, migrating away from legacy Google block entries, backup corruption (including same-length root configuration corruption), conflict-aware restore/retry, recovery despite journal-write failure, malformed/unsupported PE images, exact/idempotent binary edits, embedded payload checksums/extraction, partition bounds and short disk reads, and system-file ownership/mode verification.
 
 ## Live behavior checked
+
+The 1.0.1 regression tests cover retention across root/debloat and mixed time zones, protected unfinished records, truncated files, same-length file corruption, valid-JSON journal corruption, interrupted deletion, unexpected files, cloud archive ownership, restore preflight, operation-lock conflicts, and streaming copies with concurrent writers excluded. New journals carry checksums; old 1.0.0 journals remain compatible.
+
+The updated Review → Apply → verified-result → no-changes flow was exercised through the native UI against an isolated configuration fixture. Review left the file unchanged; Apply changed the selected key, preserved CPU/RAM, created a checked recovery point, and displayed success. Live retention reduced 15 existing recovery points to the newest three, all of which passed a full integrity audit.
+
+The fixed buttons remained visible at 600×700 and at 800×620 with 200% text size. A deliberately corrupted fixture backup triggered a visible warning, failed its integrity check, and disabled Restore; manually deleting that fixture backup left the active configuration untouched.
 
 | Check | Observed result |
 |---|---|

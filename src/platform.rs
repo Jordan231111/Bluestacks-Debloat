@@ -166,6 +166,29 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     result
 }
 
+/// A checksum inside the atomic journal detects even syntactically valid metadata damage.
+pub fn write_journal(path: &Path, value: &impl serde::Serialize) -> Result<()> {
+    let mut value = serde_json::to_value(value)?;
+    let object = value.as_object_mut().context("Journal must be an object")?;
+    object.remove("_journal_sha256");
+    let checksum = hash(&serde_json::to_vec(&value)?);
+    value["_journal_sha256"] = checksum.into();
+    atomic_write(path, &serde_json::to_vec_pretty(&value)?)
+}
+
+pub fn read_journal(path: &Path) -> Result<serde_json::Value> {
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+    let object = value.as_object_mut().context("Journal must be an object")?;
+    if let Some(checksum) = object.remove("_journal_sha256") {
+        ensure!(
+            checksum.as_str() == Some(hash(&serde_json::to_vec(&value)?).as_str()),
+            "Recovery journal checksum mismatch: {}",
+            path.display()
+        );
+    }
+    Ok(value)
+}
+
 pub fn state_dir() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)

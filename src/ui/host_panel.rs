@@ -12,7 +12,7 @@ impl App {
             .filter(|p| p.recommended && p.enabled <= 1)
             .map(|p| p.name.clone())
             .collect();
-        self.plan = None;
+        self.clear_preview();
     }
     fn maximum(&mut self) {
         self.options = HostOptions::maximum();
@@ -26,7 +26,7 @@ impl App {
             .filter(|p| p.enabled <= 1)
             .map(|p| p.name.clone())
             .collect();
-        self.plan = None;
+        self.clear_preview();
         self.status =
             "Maximum selected. CPU cores and RAM are preserved. Review each stage before applying."
                 .into();
@@ -82,11 +82,11 @@ impl App {
             egui::ComboBox::from_id_salt("performance").width(ui.available_width().min(300.0)).selected_text(match self.options.performance{Performance::Keep=>"Keep current CPU / RAM",Performance::Balanced=>"Balanced",Performance::Gaming=>"Gaming",Performance::LowMemory=>"Low memory"}).show_ui(ui,|ui|{for(value,label)in[(Performance::Keep,"Keep current CPU / RAM"),(Performance::Balanced,"Up to 4 cores / 4 GB"),(Performance::Gaming,"Up to 8 cores / 8 GB"),(Performance::LowMemory,"Up to 2 cores / 2 GB")]{ui.selectable_value(&mut self.options.performance,value,label);}});
         });
     }
-    pub(super) fn host(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    pub(super) fn host(&mut self, ui: &mut egui::Ui) {
         Self::heading(
             ui,
             "Debloat & tune",
-            "Choose a preset, review the changes, then apply them.",
+            "Checkboxes select options. Use Review and Apply in the fixed bottom bar.",
         );
         ui.horizontal_wrapped(|ui| {
             if ui.button("Recommended").clicked() {
@@ -99,7 +99,7 @@ impl App {
         if self.maximum_selected && self.options.performance == Performance::Keep {
             egui::Frame::group(ui.style()).inner_margin(12.0).show(ui,|ui|{
             ui.strong("Maximum · CPU and RAM kept as they are");ui.label("Selects all reviewed host cleanup, cloud removal, GPU / high-FPS options, optional Android packages, animations and BlueStacks-only network controls. Rooting remains a separate action.");
-            ui.label(RichText::new("Apply the host preview below, then finish the selected Android apps and Network stages. Root-only filtering needs Magisk.").color(MUTED));
+            ui.label(RichText::new("Apply host changes using the bottom bar, then finish Android apps and Network. Root-only filtering needs Magisk.").color(MUTED));
         });
         }
         ui.add_space(10.0);
@@ -116,12 +116,9 @@ impl App {
         }
         ui.collapsing("Advanced player patch",|ui|{ui.checkbox(&mut self.options.patch,"Patch system-disk integrity checks");ui.label(RichText::new("The Root tab handles this automatically when rooting. It affects all instances and changes the player's signature. It is not a performance tweak.").small().color(MUTED));});
         if before != format!("{:?}", self.options) {
-            self.plan = None;
+            self.clear_preview();
         }
         ui.add_space(12.0);
-        if ui.button("Preview host changes").clicked() {
-            self.preview_host(ctx, false);
-        }
-        self.preview(ui, ctx);
+        self.preview_details(ui);
     }
 }

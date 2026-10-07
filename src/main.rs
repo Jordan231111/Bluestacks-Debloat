@@ -2,7 +2,7 @@
 mod ui;
 use anyhow::{Context, Result};
 use bluestacks_debloat::{
-    adb, discovery,
+    adb, backup_cleanup, discovery,
     engine::{self, HostOptions, Performance},
     network, patch, platform, rooting, transaction,
 };
@@ -106,6 +106,12 @@ enum Action {
     Close,
     /// List available operation backups.
     Backups,
+    /// Fully verify recovery journals, files and checksums without restoring.
+    VerifyBackups,
+    /// Enforce the fixed newest-three retention rule, protecting recovery problems.
+    CleanupBackups,
+    /// Permanently delete one completed recovery point, including its cloud copies.
+    DeleteBackup { backup: PathBuf },
     /// Restore one exact backup directory (Android backups require the instance running).
     Restore { backup: PathBuf },
 }
@@ -157,7 +163,16 @@ fn run_cli() -> Result<()> {
         return rooting::restore_backup(backup, &root, |s| eprintln!("{s}"));
     }
     if let Some(Action::Backups) = args.command {
-        return json(&transaction::backups(&root)?);
+        return json(&backup_cleanup::list(&root)?);
+    }
+    if let Some(Action::VerifyBackups) = args.command {
+        return json(&backup_cleanup::audit(&root)?);
+    }
+    if let Some(Action::CleanupBackups) = args.command {
+        return json(&backup_cleanup::prune(&root, |s| eprintln!("{s}"))?);
+    }
+    if let Some(Action::DeleteBackup { ref backup }) = args.command {
+        return backup_cleanup::delete(&root, backup);
     }
     if let Some(Action::Restore { ref backup }) = args.command {
         return transaction::restore(backup, &root, |s| eprintln!("{s}"));
@@ -295,7 +310,13 @@ fn run_cli() -> Result<()> {
             platform::close_windows(&pids);
             println!("Close requested; complete any BlueStacks exit dialog before host changes.");
         }
-        Some(Action::Backups | Action::Restore { .. }) => unreachable!(),
+        Some(
+            Action::Backups
+            | Action::Restore { .. }
+            | Action::VerifyBackups
+            | Action::CleanupBackups
+            | Action::DeleteBackup { .. },
+        ) => unreachable!(),
         None => ui::run()?,
     }
     Ok(())

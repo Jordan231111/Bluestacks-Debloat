@@ -181,10 +181,7 @@ pub fn info(install: &Installation, instance: &str) -> Result<RootInfo> {
     })
 }
 fn save(dir: &Path, j: &Journal) -> Result<()> {
-    platform::atomic_write(
-        &dir.join("root-journal.json"),
-        &serde_json::to_vec_pretty(j)?,
-    )
+    platform::write_journal(&dir.join("root-journal.json"), j)
 }
 fn stage(dir: &Path, j: &mut Journal, name: &str, log: &mut impl FnMut(String)) -> Result<()> {
     j.stage = name.into();
@@ -615,7 +612,7 @@ pub fn install(
         info.supported,
         "Rooting supports Android 9, 11 and 13 64-bit instances"
     );
-    let _app = platform::lock(state)?;
+    let _lock = platform::lock(state)?;
     let _companion = CompanionLock::take()?;
     if !repair && Config::read(&info.installation.conf())?.get("bst.enable_adb_access") == Some("1")
     {
@@ -792,7 +789,7 @@ pub fn install(
             ));
         }
     }
-    // Only this freshly generated workspace is removed; recovery backups are retained.
+    // Only this freshly generated workspace is removed here; retention runs afterwards.
     if work.parent() == Some(state.join("root-work").as_path())
         && work
             .file_name()
@@ -800,6 +797,7 @@ pub fn install(
     {
         let _ = fs::remove_dir_all(&work);
     }
+    crate::backup_cleanup::finish_operation(state, &_lock, &mut log);
     result
 }
 const POPULATE: &str = r#"set -e
@@ -873,6 +871,7 @@ pub fn unroot(info: RootInfo, state: &Path, mut log: impl FnMut(String)) -> Resu
             log(format!("Recovery needs attention: {e:#}"));
         }
     }
+    crate::backup_cleanup::finish_operation(state, &_lock, &mut log);
     result
 }
 
@@ -1004,29 +1003,31 @@ pub fn full_unroot(install: Installation, state: &Path, mut log: impl FnMut(Stri
             log(format!("Recovery needs attention: {e:#}"));
         }
     }
+    crate::backup_cleanup::finish_operation(state, &_lock, &mut log);
     result
 }
 pub fn backups(state: &Path) -> Result<Vec<RootBackupInfo>> {
-    let root = state.join("root-backups");
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for entry in fs::read_dir(root)?.flatten() {
-        if let Ok(bytes) = fs::read(entry.path().join("root-journal.json"))
-            && let Ok(j) = serde_json::from_slice::<Journal>(&bytes)
-        {
-            out.push(RootBackupInfo {
-                path: entry.path(),
-                instance: j.info.instance,
-                created: j.created,
-                action: j.action,
-                stage: j.stage,
-            });
-        }
-    }
-    out.sort_by(|a, b| b.created.cmp(&a.created));
-    Ok(out)
+    Ok(crate::backup_cleanup::list(state)?
+        .into_iter()
+        .filter(|record| record.kind == crate::backup_cleanup::Kind::Root)
+        .map(|record| {
+            let instance = platform::read_journal(&record.path.join("root-journal.json"))
+                .ok()
+                .and_then(|j| j.get("info")?.get("instance")?.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "Unknown instance".into());
+            RootBackupInfo {
+                path: record.path,
+                instance,
+                created: record.created,
+                action: record.title,
+                stage: if record.problem.is_some() {
+                    format!("{} — needs inspection", record.status)
+                } else {
+                    record.status
+                },
+            }
+        })
+        .collect())
 }
 pub fn restore_backup(path: &Path, state: &Path, mut log: impl FnMut(String)) -> Result<()> {
     platform::require_admin()?;
@@ -1038,8 +1039,14 @@ pub fn restore_backup(path: &Path, state: &Path, mut log: impl FnMut(String)) ->
         path.parent().is_some_and(|p| platform::same_path(p, &root)),
         "Choose a root backup from this app"
     );
-    let mut j: Journal = serde_json::from_slice(&fs::read(path.join("root-journal.json"))?)?;
+    let mut j: Journal =
+        serde_json::from_value(platform::read_journal(&path.join("root-journal.json"))?)?;
     ensure!(j.schema == 1, "Unsupported root backup schema");
+    ensure!(
+        j.stage != "Deleting",
+        "This recovery point is being deleted and cannot be restored"
+    );
+    crate::backup_cleanup::verify_locked(state, &path)?;
     let newer = backups(state)?
         .iter()
         .any(|b| b.created > j.created && b.stage != "Restored");

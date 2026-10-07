@@ -1,14 +1,17 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+mod action_bar;
+mod backups_panel;
 mod host_panel;
 mod responsive;
 mod root_panel;
 use bluestacks_debloat::{
     adb::{Client, Package},
+    backup_cleanup,
     discovery::{self, Installation, Snapshot},
     engine::{self, HostOptions, Performance},
     network, platform, rooting,
-    transaction::{self, BackupInfo, Plan, Target},
+    transaction::{self, Plan, Target},
 };
 use eframe::egui::{self, Color32, RichText};
 use std::{
@@ -41,9 +44,10 @@ struct Preferences {
 enum Reply {
     Scanned(Snapshot),
     Preview(Plan),
+    Applied { changes: usize, backup: PathBuf },
     Packages(Vec<Package>),
     Network(network::Report),
-    Backups(Vec<BackupInfo>),
+    Backups(Vec<backup_cleanup::Record>),
     Done(String),
     RootInfo(rooting::RootInfo),
     RootStatus(rooting::Verification),
@@ -61,11 +65,15 @@ struct App {
     conf_path: String,
     options: HostOptions,
     plan: Option<Plan>,
+    applied: Option<action_bar::AppliedChanges>,
+    scroll_to_preview: bool,
     packages: Vec<Package>,
     selected: BTreeSet<String>,
     animations: bool,
     report: Option<network::Report>,
-    backups: Vec<BackupInfo>,
+    backups: Vec<backup_cleanup::Record>,
+    delete_backup: Option<PathBuf>,
+    backup_warning: Option<String>,
     logs: Vec<String>,
     error: Option<String>,
     status: String,
@@ -113,11 +121,15 @@ impl App {
             conf_path: String::new(),
             options: HostOptions::default(),
             plan: None,
+            applied: None,
+            scroll_to_preview: false,
             packages: vec![],
             selected: BTreeSet::new(),
             animations: true,
             report: None,
             backups: vec![],
+            delete_backup: None,
+            backup_warning: None,
             logs: vec![],
             error: None,
             status: "Finding BlueStacks…".into(),
@@ -211,6 +223,9 @@ impl App {
         while let Ok(event) = self.rx.try_recv() {
             match event {
                 Event::Log(s) => {
+                    if s.starts_with(backup_cleanup::WARNING_PREFIX) {
+                        self.backup_warning = Some(s.clone());
+                    }
                     if self.busy {
                         self.status = s.clone();
                     }
@@ -235,15 +250,46 @@ impl App {
                                     self.conf_path =
                                         s.installation.data_dir.to_string_lossy().into();
                                     self.snapshot = Some(s);
+                                    self.refresh_backup_list();
                                     self.plan = None;
+                                    self.applied = None;
                                     self.log("Installation inspected. No settings changed.".into());
                                 }
                                 Reply::Preview(p) => {
+                                    let count = Self::change_count(&p);
+                                    self.status = if count == 0 {
+                                        "Review complete. No changes needed.".into()
+                                    } else {
+                                        format!(
+                                            "{} ready. Click Apply to make them.",
+                                            Self::changes(count)
+                                        )
+                                    };
                                     self.log(format!(
                                         "Preview ready: {} operation(s)",
                                         p.operations.len()
                                     ));
                                     self.plan = Some(p);
+                                    self.applied = None;
+                                    self.scroll_to_preview = true;
+                                }
+                                Reply::Applied { changes, backup } => {
+                                    self.status =
+                                        format!("{} applied and verified.", Self::changes(changes));
+                                    self.log(format!(
+                                        "{} Recovery backup: {}",
+                                        self.status,
+                                        backup.display()
+                                    ));
+                                    self.plan = None;
+                                    self.applied = None;
+                                    self.applied = Some(action_bar::AppliedChanges {
+                                        changes,
+                                        backup,
+                                        time: chrono::Local::now().format("%H:%M").to_string(),
+                                    });
+                                    self.backups =
+                                        backup_cleanup::list(&self.root).unwrap_or_default();
                                 }
                                 Reply::Packages(p) => {
                                     self.selected = p
@@ -256,9 +302,19 @@ impl App {
                                         .collect();
                                     self.packages = p;
                                     self.plan = None;
+                                    self.applied = None;
                                 }
                                 Reply::Network(r) => self.report = Some(r),
-                                Reply::Backups(b) => self.backups = b,
+                                Reply::Backups(b) => {
+                                    if b.iter().all(|record| {
+                                        record.problem.is_none()
+                                            && record.can_delete
+                                            && record.status != "Deleting"
+                                    }) {
+                                        self.backup_warning = None;
+                                    }
+                                    self.backups = b;
+                                }
                                 Reply::RootInfo(info) => self.root_info = Some(info),
                                 Reply::RootStatus(status) => self.root_status = Some(status),
                                 Reply::RootBackups(backups) => self.root_backups = backups,
@@ -266,8 +322,9 @@ impl App {
                                     self.status = s.clone();
                                     self.log(s);
                                     self.plan = None;
+                                    self.applied = None;
                                     self.backups =
-                                        transaction::backups(&self.root).unwrap_or_default();
+                                        backup_cleanup::list(&self.root).unwrap_or_default();
                                 }
                             }
                         }
@@ -284,14 +341,37 @@ impl App {
     fn scan(&mut self, ctx: &egui::Context) {
         let install = self.install_path.clone();
         let conf = self.conf_path.clone();
-        self.job(ctx, "Inspecting installation…", move |_| {
-            let i = (!install.trim().is_empty()).then(|| PathBuf::from(install.trim()));
-            let c = (!conf.trim().is_empty()).then(|| PathBuf::from(conf.trim()));
-            Ok(Reply::Scanned(discovery::snapshot(discovery::select(
-                i.as_deref(),
-                c.as_deref(),
-            )?)?))
-        });
+        let root = self.root.clone();
+        self.job(
+            ctx,
+            "Inspecting installation and maintaining backups…",
+            move |tx| {
+                if let Err(error) = backup_cleanup::prune(&root, |s| {
+                    let _ = tx.send(Event::Log(s));
+                }) {
+                    let _ = tx.send(Event::Log(format!(
+                        "{} {error:#}",
+                        backup_cleanup::WARNING_PREFIX
+                    )));
+                }
+                let i = (!install.trim().is_empty()).then(|| PathBuf::from(install.trim()));
+                let c = (!conf.trim().is_empty()).then(|| PathBuf::from(conf.trim()));
+                Ok(Reply::Scanned(discovery::snapshot(discovery::select(
+                    i.as_deref(),
+                    c.as_deref(),
+                )?)?))
+            },
+        );
+    }
+    fn refresh_backup_list(&mut self) {
+        match backup_cleanup::list(&self.root) {
+            Ok(backups) => self.backups = backups,
+            Err(error) => {
+                let warning = format!("{} {error:#}", backup_cleanup::WARNING_PREFIX);
+                self.log(warning.clone());
+                self.backup_warning = Some(warning);
+            }
+        }
     }
     fn install(&self) -> Option<Installation> {
         self.snapshot.as_ref().map(|s| s.installation.clone())
@@ -387,7 +467,8 @@ impl App {
             }
             ui.add_space(12.0);
             ui.horizontal_wrapped(|ui| {
-                if ui.button("Choose debloat options").clicked() { self.tab = Tab::Host; self.plan = None; }
+                if ui.button("Choose debloat options").clicked() { self.tab = Tab::Host; self.plan = None;
+                                    self.applied = None; }
                 if ui.button("Start selected instance").clicked() { let install = s.installation.clone(); let name = self.instance.clone(); self.job(ctx, "Starting BlueStacks…", move |_| { discovery::launch(&install, &name)?; Ok(Reply::Done("BlueStacks is starting. Wait for the Android home screen before scanning apps.".into())) }); }
                 if ui.button("Request normal close").clicked() { let install = s.installation.clone(); self.job(ctx, "Requesting BlueStacks to close…", move |_| { let pids = discovery::processes(&install)?.into_iter().filter(|p| p.name.eq_ignore_ascii_case("HD-Player.exe") && p.instance.is_some()).map(|p| p.pid).collect::<Vec<_>>(); platform::close_windows(&pids); Ok(Reply::Done("Close requested. Complete BlueStacks' exit dialog and close the Multi-instance Manager.".into())) }); }
             });
@@ -419,6 +500,7 @@ impl App {
             if ui.button("Inspect these folders").clicked() {
                 self.snapshot = None;
                 self.plan = None;
+                self.applied = None;
                 self.scan(ctx);
             }
             if ui.button("Detect from registry again").clicked() {
@@ -426,6 +508,7 @@ impl App {
                 self.conf_path.clear();
                 self.snapshot = None;
                 self.plan = None;
+                self.applied = None;
                 self.scan(ctx);
             }
         });
@@ -483,6 +566,7 @@ impl App {
                         self.selected.remove(&p.name);
                     }
                     self.plan = None;
+                    self.applied = None;
                 }
                 if p.enabled > 1 {
                     ui.label(RichText::new("already disabled").color(ACCENT));
@@ -499,32 +583,23 @@ impl App {
             .changed()
         {
             self.plan = None;
+            self.applied = None;
         }
         ui.label(RichText::new("Games, the launcher, Google Play, billing and accounts are excluded. Disabling keeps app data and can be undone.").color(MUTED));
-        if ui.button("Preview Android changes").clicked()
-            && let Some(install) = self.install()
-        {
-            let name = self.instance.clone();
-            let selected = self.selected.iter().cloned().collect::<Vec<_>>();
-            let animations = self.animations;
-            self.job(ctx, "Reading current Android settings…", move |_| {
-                Ok(Reply::Preview(engine::guest_plan(
-                    &install, &name, &selected, animations,
-                )?))
-            });
-        }
-        self.preview(ui, ctx);
+        self.preview_details(ui);
     }
-    fn cloud(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn cloud(&mut self, ui: &mut egui::Ui) {
         Self::heading(
             ui,
             "Keep local. Remove the cloud.",
             "Remove BlueStacks X separately from your Android emulator.",
         );
         egui::Frame::group(ui.style()).inner_margin(18.0).show(ui, |ui| {
-            if ui.checkbox(&mut self.options.remove_x, "Remove BlueStacks X / Store").changed() { self.plan = None; }
+            if ui.checkbox(&mut self.options.remove_x, "Remove BlueStacks X / Store").changed() { self.plan = None;
+                                    self.applied = None; }
             ui.label(RichText::new("Removes its active folder, matching startup entries, registrations and shortcuts. Turns off the emulator's cloud, rewards and AI integrations.").color(MUTED));
-            ui.add_space(8.0); if ui.checkbox(&mut self.options.remove_services, "Also remove the separate BlueStacks Services app").changed() { self.plan = None; }
+            ui.add_space(8.0); if ui.checkbox(&mut self.options.remove_services, "Also remove the separate BlueStacks Services app").changed() { self.plan = None;
+                                    self.applied = None; }
             ui.label(RichText::new("The cloud companion app is separate from the emulator's VM services and drivers.").color(MUTED));
         });
         ui.add_space(12.0);
@@ -532,10 +607,7 @@ impl App {
         ui.label("The App Player, Multi-instance Manager, Android disks, games and saves remain available. Launch the emulator from this app or its BlueStacks 5 shortcut.");
         ui.label(RichText::new("Recovery copies keep the original cloud folders on the same drive. Removal stops active components but initially does not reclaim their disk space. Updates can reinstall them.").color(MUTED));
         ui.add_space(12.0);
-        if ui.button("Preview cloud removal").clicked() {
-            self.preview_host(ctx, true);
-        }
-        self.preview(ui, ctx);
+        self.preview_details(ui);
     }
     fn network(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         Self::heading(
@@ -614,6 +686,7 @@ impl App {
             .changed()
         {
             self.plan = None;
+            self.applied = None;
         }
         if ui
             .checkbox(
@@ -623,145 +696,43 @@ impl App {
             .changed()
         {
             self.plan = None;
+            self.applied = None;
         }
         ui.label(RichText::new("Launcher isolation stops its online recommendations, search and store functions. Games and Google Play keep their own network access. Restart Android to refresh the launcher. Hosts filtering takes effect after an Android restart; restore also needs a restart to remove that overlay.").color(MUTED));
-        if ui.button("Preview root network controls").clicked()
-            && let Some(install) = self.install()
-        {
-            let name = self.instance.clone();
-            let hosts = self.root_hosts;
-            let isolate = self.root_isolate;
-            self.job(
-                ctx,
-                "Inspecting Magisk and Android network rules…",
-                move |_| {
-                    Ok(Reply::Preview(engine::root_plan(
-                        &install, &name, hosts, isolate,
-                    )?))
-                },
-            );
-        }
-        self.preview(ui, ctx);
+        self.preview_details(ui);
     }
-    fn backups(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        Self::heading(
-            ui,
-            "Recover your changes",
-            "Each operation has its own verified backup and restore journal.",
-        );
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Refresh backups").clicked() {
-                let root = self.root.clone();
-                self.job(ctx, "Reading operation journals…", move |_| {
-                    Ok(Reply::Backups(transaction::backups(&root)?))
-                });
-            }
-            if ui.button("Open backup folder").clicked() {
-                let _ = platform::open_folder(&self.root.join("backups"));
-            }
-        });
-        ui.label(RichText::new("Close BlueStacks for host restores. Start the original instance for Android restores. Values modified afterwards are preserved and reported as conflicts.").color(MUTED));
-        let mut restore = None;
-        for b in &self.backups {
-            egui::Frame::group(ui.style())
-                .inner_margin(12.0)
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.vertical(|ui| {
-                            ui.strong(&b.title);
-                            ui.label(
-                                RichText::new(format!("{} • {}", b.created, b.status))
-                                    .small()
-                                    .color(MUTED),
-                            );
-                        });
-                        if ui
-                            .add_enabled(
-                                b.status != "restored",
-                                egui::Button::new("Restore this operation"),
-                            )
-                            .clicked()
-                        {
-                            restore = Some(b.path.clone());
-                        }
-                    });
-                });
-        }
-        if let Some(path) = restore {
-            let root = self.root.clone();
-            self.job(
-                ctx,
-                "Restoring and verifying original values…",
-                move |tx| {
-                    transaction::restore(&path, &root, |s| {
-                        let _ = tx.send(Event::Log(s));
-                    })?;
-                    Ok(Reply::Done("Restoration verified.".into()))
-                },
-            );
-        }
-        if self.backups.is_empty() {
-            ui.label("No operation backups yet.");
-        }
-    }
-    fn preview(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let mut apply = false;
+    fn preview_details(&mut self, ui: &mut egui::Ui) {
         if let Some(plan) = &self.plan {
             ui.add_space(14.0);
             ui.separator();
-            ui.strong(format!("Preview • {} operation(s)", plan.operations.len()));
-            egui::ScrollArea::vertical()
-                .id_salt("preview")
-                .max_height(260.0)
-                .show(ui, |ui| {
-                    for op in &plan.operations {
-                        ui.label(RichText::new(&op.label).color(ACCENT));
-                        if let Target::Config { edits, .. } = &op.target {
-                            for e in edits {
-                                ui.monospace(format!("{}: {} → {}", e.key, e.before, e.after));
-                            }
-                        } else {
-                            ui.label(
-                                RichText::new(format!("{:?}", op.target))
-                                    .small()
-                                    .color(MUTED),
-                            );
+            let heading = ui.strong(format!(
+                "Review: {} pending",
+                Self::changes(Self::change_count(plan))
+            ));
+            if self.scroll_to_preview {
+                heading.scroll_to_me(Some(egui::Align::Min));
+                self.scroll_to_preview = false;
+            }
+            ui.label("This review has made no changes. Apply using the fixed bottom bar.");
+            for op in &plan.operations {
+                ui.label(RichText::new(&op.label).color(ACCENT));
+                ui.collapsing(format!("Details: {}", op.label), |ui| {
+                    if let Target::Config { edits, .. } = &op.target {
+                        for e in edits {
+                            ui.monospace(format!("{}: {} → {}", e.key, e.before, e.after));
                         }
-                    }
-                    for note in &plan.notes {
-                        ui.label(RichText::new(note).small().color(MUTED));
+                    } else {
+                        ui.label(
+                            RichText::new(format!("{:?}", op.target))
+                                .small()
+                                .color(MUTED),
+                        );
                     }
                 });
-            let admin = plan.guest.is_some() || platform::is_admin();
-            if !admin {
-                ui.label("Restart as administrator to apply host changes.");
             }
-            apply = ui
-                .add_enabled(
-                    admin && !plan.operations.is_empty(),
-                    egui::Button::new("Apply these changes").fill(Color32::from_rgb(35, 100, 91)),
-                )
-                .clicked();
-            if plan.operations.is_empty() {
-                ui.label(
-                    RichText::new(
-                        "Everything selected is already configured, or is absent in this build.",
-                    )
-                    .color(ACCENT),
-                );
+            for note in &plan.notes {
+                ui.label(RichText::new(note).small().color(MUTED));
             }
-        }
-        if apply && let Some(plan) = self.plan.take() {
-            let root = self.root.clone();
-            self.job(ctx, "Applying and verifying changes…", move |tx| {
-                let path = transaction::apply(plan, &root, |s| {
-                    let _ = tx.send(Event::Log(s));
-                })?;
-                Ok(Reply::Done(format!(
-                    "Changes verified. Recovery backup: {}",
-                    path.display()
-                )))
-            });
         }
     }
 }
@@ -779,7 +750,7 @@ pub fn run() -> Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "BlueStacks Debloat",
+        concat!("BlueStacks Debloat ", env!("CARGO_PKG_VERSION")),
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )

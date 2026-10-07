@@ -18,10 +18,13 @@ Run `BluestacksDebloat.exe` without arguments for the desktop interface. Run `--
 .\BluestacksDebloat.exe patch-info
 .\BluestacksDebloat.exe --instance Pie64 screenshot .\android.png
 .\BluestacksDebloat.exe backups
+.\BluestacksDebloat.exe verify-backups
 .\BluestacksDebloat.exe restore 'C:\Users\YOU\AppData\Local\BluestacksDebloat\backups\OPERATION'
 ```
 
 `--install` and `--conf` override discovery. Specify `--instance` for instance-specific commands when several instances exist.
+
+Completed recovery points are automatically limited to the newest three after changes. `cleanup-backups` runs that same fixed rule explicitly. `delete-backup 'C:\...\OPERATION'` permanently deletes one completed point; these two explicit cleanup commands do not use `--apply`. Unfinished and damaged recovery is reported and protected as described in the [runbook](RUNBOOK.md).
 
 `host --maximum` selects the host stage, including BlueStacks-only hosts filtering and a high FPS limit. It preserves CPU/RAM and never silently roots Android. Apply guest and root-network changes separately while the selected instance is running.
 

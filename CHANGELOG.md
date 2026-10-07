@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1 — 2026-10-07
+
+- Keep Review and Apply visible in a fixed bottom bar, with pending counts and verified results.
+- Automatically retain the newest three verified recovery points across debloat and root; add manual deletion and integrity checks.
+- Surface damaged and incomplete backups, protect unresolved recovery, and resume interrupted deletion.
+- Check every recovery file before restoring; checksum new journals and hash large disks during copying.
+
 ## 1.0.0 — 2026-10-07
 
 - Rebuilt in Rust as a standalone Windows x64 executable, with an adaptive desktop UI and CLI.

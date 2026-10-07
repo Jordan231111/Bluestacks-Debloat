@@ -9,10 +9,25 @@ use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::Read,
+    os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     time::Duration,
 };
-use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_SHARE_READ, MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW,
+};
+
+struct HashingReader {
+    file: File,
+    hash: Sha256,
+}
+impl Read for HashingReader {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.file.read(bytes)?;
+        self.hash.update(&bytes[..n]);
+        Ok(n)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Backup {
@@ -39,8 +54,16 @@ pub fn copy_file(source: &Path, dest: &Path, log: &mut impl FnMut(String)) -> Re
     fs::create_dir_all(parent)?;
     let temp = parent.join(format!(".bsd-copy-{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| {
-        let mut input = File::open(source)?;
-        let size = input.metadata()?.len();
+        // Keep writers/deleters out while hashing the same bytes that are copied.
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(source)?;
+        let size = file.metadata()?.len();
+        let mut input = HashingReader {
+            file,
+            hash: Sha256::new(),
+        };
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -62,7 +85,7 @@ pub fn copy_file(source: &Path, dest: &Path, log: &mut impl FnMut(String)) -> Re
             "Verifying the recovery copy of {}",
             source.file_name().unwrap_or_default().to_string_lossy()
         ));
-        let hash = hash_file(source)?;
+        let hash = format!("{:x}", input.hash.finalize());
         ensure!(hash_file(&temp)? == hash, "Disk backup verification failed");
         let ok = unsafe {
             if dest.exists() {
@@ -102,7 +125,7 @@ pub fn backup(source: &Path, dest: &Path, log: &mut impl FnMut(String)) -> Resul
         source: source.into(),
         saved: dest.into(),
         sha256,
-        length: source.metadata()?.len(),
+        length: dest.metadata()?.len(),
     })
 }
 pub fn restore(b: &Backup, log: &mut impl FnMut(String)) -> Result<()> {
@@ -376,5 +399,28 @@ mod tests {
         assert_eq!(fs::read(&a).unwrap(), b"original");
         fs::write(&b, b"corrupt").unwrap();
         assert!(restore(&backup, &mut |_| {}).is_err());
+    }
+
+    #[test]
+    fn streamed_backup_hashes_multiple_chunks_and_excludes_concurrent_writers() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("disk");
+        let saved = temp.path().join("saved");
+        let bytes = (0..(8 * 1024 * 1024 + 17))
+            .map(|i| (i % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&source, &bytes).unwrap();
+        let mut denied = false;
+        let backup = backup(&source, &saved, &mut |message| {
+            if message.starts_with("Copying") {
+                denied = true;
+                assert!(OpenOptions::new().write(true).open(&source).is_err());
+            }
+        })
+        .unwrap();
+        assert!(denied);
+        assert_eq!(backup.sha256, platform::hash(&bytes));
+        assert_eq!(backup.length, bytes.len() as u64);
+        assert_eq!(fs::read(saved).unwrap(), bytes);
     }
 }

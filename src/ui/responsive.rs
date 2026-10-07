@@ -11,13 +11,13 @@ const TABS: &[(Tab, &str)] = &[
 impl App {
     fn choose_tab(&mut self, tab: Tab, ctx: &egui::Context) {
         if self.tab != tab {
-            self.plan = None;
+            self.clear_preview();
         }
         self.tab = tab;
         if tab == Tab::Backups {
             let root = self.root.clone();
             self.job(ctx, "Reading backups…", move |_| {
-                Ok(Reply::Backups(transaction::backups(&root)?))
+                Ok(Reply::Backups(backup_cleanup::audit(&root)?))
             });
         }
     }
@@ -42,7 +42,7 @@ impl App {
                 }
             });
         if old != self.instance {
-            self.plan = None;
+            self.clear_preview();
             self.packages.clear();
             self.selected.clear();
             self.root_info = None;
@@ -76,6 +76,11 @@ impl App {
                     RichText::new("BlueStacks Debloat")
                         .size(if narrow { 18.0 } else { 21.0 })
                         .strong(),
+                );
+                ui.label(
+                    RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+                        .small()
+                        .color(MUTED),
                 );
                 if platform::is_admin() {
                     ui.label(RichText::new("Administrator").small().color(ACCENT));
@@ -127,28 +132,44 @@ impl App {
                 });
             }
         });
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if self.busy {
-                    ui.spinner();
-                } else {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 3.0, ACCENT);
-                }
-                ui.add(egui::Label::new(&self.status).wrap().truncate());
-            });
-            egui::CollapsingHeader::new("Activity and details").show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(110.0)
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        for l in &self.logs {
-                            ui.add(egui::Label::new(RichText::new(l).monospace()).wrap());
+        // Reserve the action bar before logs/content so neither can push it off-screen.
+        let workflow = self.has_review_actions();
+        let mut review_action = None;
+        if workflow {
+            egui::TopBottomPanel::bottom("review_actions")
+                .frame(
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(25, 39, 44))
+                        .inner_margin(10.0),
+                )
+                .show(ctx, |ui| review_action = self.action_bar(ui));
+        }
+        if !workflow || ctx.content_rect().height() >= 420.0 {
+            egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+                if !workflow {
+                    ui.horizontal_wrapped(|ui| {
+                        if self.busy {
+                            ui.spinner();
+                        } else {
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            ui.painter().circle_filled(rect.center(), 3.0, ACCENT);
                         }
+                        ui.add(egui::Label::new(&self.status).wrap().truncate());
                     });
+                }
+                egui::CollapsingHeader::new("Activity and details").show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(110.0)
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for l in &self.logs {
+                                ui.add(egui::Label::new(RichText::new(l).monospace()).wrap());
+                            }
+                        });
+                });
             });
-        });
+        }
         if !narrow {
             egui::SidePanel::left("navigation")
                 .exact_width(214.0)
@@ -200,6 +221,13 @@ impl App {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.set_max_width(ui.available_width());
+                    if self.backup_warning.is_some() {
+                        egui::Frame::group(ui.style()).inner_margin(10.0).show(ui, |ui| {
+                            ui.label(RichText::new("Backup cleanup needs attention").color(Color32::from_rgb(255, 196, 119)));
+                            ui.label("A recovery point was kept because it needs inspection. Open Backups & restore for details.");
+                            if ui.button("Inspect backups").clicked() { self.choose_tab(Tab::Backups, ctx); }
+                        });
+                    }
                     if let Some(error) = self.error.clone() {
                         egui::Frame::group(ui.style())
                             .fill(Color32::from_rgb(67, 31, 36))
@@ -218,14 +246,17 @@ impl App {
                     }
                     ui.add_enabled_ui(!self.busy, |ui| match self.tab {
                         Tab::Overview => self.overview(ui, ctx),
-                        Tab::Host => self.host(ui, ctx),
+                        Tab::Host => self.host(ui),
                         Tab::Android => self.android(ui, ctx),
-                        Tab::Cloud => self.cloud(ui, ctx),
+                        Tab::Cloud => self.cloud(ui),
                         Tab::Network => self.network(ui, ctx),
                         Tab::Root => self.root_page(ui, ctx),
                         Tab::Backups => self.backups(ui, ctx),
                     });
                 });
         });
+        if let Some(action) = review_action {
+            self.run_review_action(action, ctx);
+        }
     }
 }

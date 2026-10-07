@@ -31,6 +31,8 @@ Clones may use the same `Root.vhd`. The companion's gate script is preserved: Ma
 
 Root journals and disk copies live under `%LOCALAPPDATA%\BluestacksDebloat\root-backups`. The Root tab lists them separately from smaller debloat backups. Restore newer root operations first.
 
+Backups & restore lists both kinds together, supports integrity checks and manual deletion, and automatically keeps the newest three verified completed points total. Unfinished or damaged recovery stays visible for inspection. New journals have checksums, and every recorded recovery file is checked before a manual restore begins.
+
 A root recovery copy includes the full selected Android data disk. Restoring it returns that instance's apps/data to the saved point in time. Config recovery targets root/ADB keys while preserving unrelated configuration. Applying and restoring root changes require the relevant instances to be closed; the root workflow handles shutdown itself.
 
 Failed root operations attempt recovery automatically. A failure before committing the staged system partition leaves the source system disk unchanged. Backup hashes are checked before recovery; incomplete recovery remains visible in the journal and is not reported as success.
