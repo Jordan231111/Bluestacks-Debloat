@@ -145,6 +145,12 @@ pub fn select(install: Option<&Path>, conf: Option<&Path>) -> Result<Installatio
             source: "explicit paths".into(),
         };
         item.validate()?;
+        if let Some(registered) = found.into_iter().find(|registered| {
+            platform::same_path(&registered.install_dir, &item.install_dir)
+                && platform::same_path(&registered.data_dir, &item.data_dir)
+        }) {
+            return Ok(registered);
+        }
         return Ok(item);
     }
     if let Some(path) = install {

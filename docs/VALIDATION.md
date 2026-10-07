@@ -46,6 +46,8 @@ The initial filesystem and legacy ADB integration failures during development we
 
 ## Scope limits
 
+The complete root-installation cycles in the table were performed for the original Rust release. Version 1.0.1 rechecks the changed recovery/copy routines and UI through the regression suite and isolated fixtures; it does not repeat the invasive full root installation on each Android version.
+
 The complete native installation/repair/unroot cycle was exercised on Android 11. Android 9 and 13 were exercised for boot, ADB, existing root verification, root network controls and shared-system unroot/restore. MSI App Player and unrelated BlueStacks releases need independent live validation.
 
 The Google Play test stops at the sign-in screen. No user's account credentials, purchases, game saves or game-specific anti-cheat behavior were used for testing. No game FPS benchmark or universal “all traffic is blocked” claim is made. Network snapshots are process-owned TCP endpoints plus recent-log domains, not decrypted traffic inspection.
