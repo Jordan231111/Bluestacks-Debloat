@@ -13,6 +13,7 @@ impl App {
         }
         if self.root_info.is_none()
             && !self.busy
+            && self.error.is_none()
             && let Some(install) = self.install()
         {
             let name = self.instance.clone();
@@ -77,6 +78,7 @@ impl App {
                     let state = self.root.clone();
                     let repair = self.root_repair;
                     let info = info.clone();
+                    self.root_status = None;
                     self.job(ctx, "Starting the guided root operation…", move |tx| {
                         Ok(Reply::RootStatus(rooting::install(
                             info,
@@ -113,13 +115,13 @@ impl App {
             egui::CollapsingHeader::new("Repair, remove root, and advanced recovery").show(ui,|ui|{
                 ui.checkbox(&mut self.root_repair,"Reinstall and repair even if Magisk is already working");
                 ui.label(RichText::new("Unroot removes Magisk and its modules from this instance. Root-dependent network filtering will stop. Other instances keep their own root.").color(MUTED));
-                if ui.add_enabled(platform::is_admin(),egui::Button::new("Unroot this instance")).clicked(){let state=self.root.clone();let info=info.clone();self.job(ctx,"Removing root with a recovery copy…",move |tx|{rooting::unroot(info,&state,|s|{let _=tx.send(Event::Log(s));})?;Ok(Reply::Done("Selected instance unrooted and checked.".into()))});}
+                if ui.add_enabled(platform::is_admin(),egui::Button::new("Unroot this instance")).clicked(){let state=self.root.clone();let info=info.clone();self.root_status=None;self.job(ctx,"Removing root with a recovery copy…",move |tx|{rooting::unroot(info,&state,|s|{let _=tx.send(Event::Log(s));})?;Ok(Reply::Done("Selected instance unrooted and checked.".into()))});}
                 ui.separator();ui.strong("Restore all shared root files");ui.label("This affects every installed Android version and requires each original system backup plus the original player backup. Root and Magisk modules are removed across the installation.");
-                if ui.add_enabled(platform::is_admin(),egui::Button::new("Restore all original shared root files")).clicked(){let state=self.root.clone();let install=info.installation.clone();self.job(ctx,"Restoring all shared root files…",move |tx|{rooting::full_unroot(install,&state,|s|{let _=tx.send(Event::Log(s));})?;Ok(Reply::Done("Shared root files restored.".into()))});}
+                if ui.add_enabled(platform::is_admin(),egui::Button::new("Restore all original shared root files")).clicked(){let state=self.root.clone();let install=info.installation.clone();self.root_status=None;self.job(ctx,"Restoring all shared root files…",move |tx|{rooting::full_unroot(install,&state,|s|{let _=tx.send(Event::Log(s));})?;Ok(Reply::Done("Shared root files restored.".into()))});}
                 ui.separator();ui.label("A root recovery copy restores Android data to the time it was saved. Newer app data in that instance is replaced. Restore newer root operations first.");
                 if ui.button("Show root recovery copies").clicked(){let state=self.root.clone();self.job(ctx,"Reading root recovery copies…",move |_|Ok(Reply::RootBackups(rooting::backups(&state)?)));}
                 let mut chosen=None;for backup in &self.root_backups{ui.group(|ui|{ui.label(format!("{} · {} · {}",backup.instance,backup.created,backup.stage));if ui.add_enabled(backup.stage!="Restored"&&platform::is_admin(),egui::Button::new("Restore this root recovery copy")).clicked(){chosen=Some(backup.path.clone());}});}
-                if let Some(path)=chosen{let state=self.root.clone();self.job(ctx,"Restoring the selected root recovery copy…",move |tx|{rooting::restore_backup(&path,&state,|s|{let _=tx.send(Event::Log(s));})?;Ok(Reply::Done("Root recovery copy restored.".into()))});}
+                if let Some(path)=chosen{let state=self.root.clone();self.root_status=None;self.job(ctx,"Restoring the selected root recovery copy…",move |tx|{rooting::restore_backup(&path,&state,|s|{let _=tx.send(Event::Log(s));})?;Ok(Reply::Done("Root recovery copy restored.".into()))});}
                 ui.collapsing("Technical paths",|ui|{ui.label(format!("System: {}",info.system_disk.display()));ui.label(format!("Android data: {}",info.data_disk.display()));});
             });
         }

@@ -329,6 +329,7 @@ impl App {
                             }
                         }
                         Err(e) => {
+                            self.root_status = None;
                             self.log(format!("ERROR: {e}"));
                             self.status = "Action needs attention".into();
                             self.error = Some(e);

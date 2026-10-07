@@ -55,6 +55,7 @@ impl App {
             });
         }
         if let Some((path, kind)) = restore {
+            self.root_status = None;
             let root = self.root.clone();
             self.job(
                 ctx,

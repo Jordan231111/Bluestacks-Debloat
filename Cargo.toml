@@ -1,6 +1,6 @@
 [package]
 name = "bluestacks-debloat"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2024"
 rust-version = "1.95"
 description = "Native, reversible BlueStacks 5 debloating and diagnostics for Windows"

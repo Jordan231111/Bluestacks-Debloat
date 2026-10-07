@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.2 — 2026-10-07
+
+- Clear a previous root verification result when rooting, unrooting, restoring, or checking an operation that fails.
+- Stop automatic root-support retries after an inspection error so the problem stays readable.
+
+Includes the visible Apply bar, automatic three-backup retention, and integrity checks from 1.0.1.
+
 ## 1.0.1 — 2026-10-07
 
 - Keep Review and Apply visible in a fixed bottom bar, with pending counts and verified results.
