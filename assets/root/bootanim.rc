@@ -1,0 +1,21 @@
+service bootanim /system/bin/bootanimation
+    class core animation
+    user graphics
+    group graphics audio
+    disabled
+    oneshot
+    ioprio rt 0
+    task_profiles MaxPerformance
+on post-fs-data
+    start logd
+    exec u:r:su:s0 root root -- /system/etc/init/magisk/bsr_boot.sh post-fs-data
+on nonencrypted
+    exec u:r:su:s0 root root -- /system/etc/init/magisk/bsr_boot.sh service
+on property:vold.decrypt=trigger_restart_framework
+    exec u:r:su:s0 root root -- /system/etc/init/magisk/bsr_boot.sh service
+on property:sys.boot_completed=1
+    exec u:r:su:s0 root root -- /system/etc/init/magisk/bsr_boot.sh boot-complete
+on property:init.svc.zygote=restarting
+    exec u:r:su:s0 root root -- /system/etc/init/magisk/bsr_boot.sh zygote-restart
+on property:init.svc.zygote=stopped
+    exec u:r:su:s0 root root -- /system/etc/init/magisk/bsr_boot.sh zygote-restart

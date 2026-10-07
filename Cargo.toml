@@ -1,0 +1,41 @@
+[package]
+name = "bluestacks-debloat"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Native, reversible BlueStacks 5 debloating and diagnostics for Windows"
+license-file = "LICENSE"
+repository = "https://github.com/Jordan231111/Bluestacks-Debloat"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+flate2 = "1"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+crc32fast = "1"
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
+uuid = { version = "1", features = ["v4"] }
+winreg = "0.55"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Storage_Vhd", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Threading", "Win32_Security", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
+
+[build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[[bin]]
+name = "BluestacksDebloat"
+path = "src/main.rs"

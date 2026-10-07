@@ -1,0 +1,15 @@
+egui-MIT.txt  https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT
+egui-Apache.txt  https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-APACHE
+clipboard-win-BSL.txt  https://raw.githubusercontent.com/DoumanAsh/clipboard-win/3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342/LICENSE
+gl_generator-Apache.txt  https://raw.githubusercontent.com/brendanzab/gl-rs/ea503e8d5fb6d73c6030e6191ce738cd3bf3433e/LICENSE
+khronos_api-Apache.txt  https://raw.githubusercontent.com/brendanzab/gl-rs/f150967b1c44ae888e6676f93f639ebc82771bdc/LICENSE
+profiling-MIT.txt  https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT
+profiling-Apache.txt  https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE
+KitsuneMagisk-GPL.txt  https://raw.githubusercontent.com/Jordan231111/KitsuneMagisk/25fa2159f/LICENSE
+e2fsprogs-NOTICE.txt  https://raw.githubusercontent.com/tytso/e2fsprogs/v1.44.5/NOTICE
+e2fsprogs-GPL-2.0.txt  https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+LGPL-2.1.txt  https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+GCC-runtime-exception.txt  https://raw.githubusercontent.com/gcc-mirror/gcc/master/COPYING.RUNTIME
+Cygwin-COPYING.txt  https://raw.githubusercontent.com/cygwin/cygwin/cygwin-3.6.9/winsup/COPYING
+Cygwin-LICENSE.txt  https://raw.githubusercontent.com/cygwin/cygwin/cygwin-3.6.9/winsup/CYGWIN_LICENSE
+Cygwin-COPYING.LIB.txt  https://raw.githubusercontent.com/cygwin/cygwin/cygwin-3.6.9/winsup/COPYING.LIB

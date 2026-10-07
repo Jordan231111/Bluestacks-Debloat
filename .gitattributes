@@ -1,0 +1,18 @@
+* text=auto
+*.rs text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.png binary
+*.apk binary
+*.zip binary
+*.gz binary
+assets/root/*.sh text eol=lf
+assets/root/*.rc text eol=lf
+assets/root/*.c text eol=lf
+assets/root/bindmount.* text eol=lf
+# Preserve upstream license text, including its original indentation.
+assets/licenses/*.txt text eol=lf -whitespace

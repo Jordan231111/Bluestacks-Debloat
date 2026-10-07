@@ -8,3 +8,8 @@ desktop.ini
 .DS_Store
 .vscode/
 *.log
+
+# Build outputs and private machine evidence
+/target/
+/dist/
+/.local/

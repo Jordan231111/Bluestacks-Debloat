@@ -1,25 +1,10 @@
 @echo off
 setlocal
-title Bluestacks-Debloat
-
-rem --- self-elevate to Administrator -------------------------------------------------
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Requesting administrator privileges...
-    powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath '%~f0'"
-    exit /b
+set "APP=%~dp0BluestacksDebloat.exe"
+if not exist "%APP%" set "APP=%~dp0dist\BluestacksDebloat.exe"
+if not exist "%APP%" (
+  echo BluestacksDebloat.exe was not found. Run tools\build.ps1 or use a compiled release.
+  pause
+  exit /b 1
 )
-
-rem --- run the PowerShell engine next to this launcher -------------------------------
-set "PS1=%~dp0blueStackDebloat.ps1"
-if not exist "%PS1%" (
-    echo [!] blueStackDebloat.ps1 not found next to this file.
-    pause
-    exit /b 1
-)
-
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %*
-
-echo.
-pause
-endlocal
+"%APP%" %*

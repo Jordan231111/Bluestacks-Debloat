@@ -1,32 +1,18 @@
 # Changelog
 
-`Bluestacks-Debloat` removes ads, tracking/telemetry, promotional spam and bloatware from BlueStacks 5,
-with every change backed up and reversible. Releases are grouped by the BlueStacks version they target.
+## 1.0.0 — 2026-10-07
 
----
+- Rebuilt in Rust as a standalone Windows x64 executable, with an adaptive desktop UI and CLI.
+- Added separate BlueStacks X/Store and cloud Services removal with recovery copies.
+- Ported the companion Magisk workflow: install, repair, verify, unroot, and restore disks.
+- Added Maximum debloat while preserving CPU/RAM, plus BlueStacks-only network controls.
+- Added isolated ADB connections, exact instance checks, previews, verified backups, and conflict-aware recovery.
 
-## v0.1.0 — initial release · BlueStacks 5.22+ · Android 9 / 11 / 13
+Validated on BlueStacks 5.22.265.1013. See [tested behavior and limits](docs/VALIDATION.md).
 
-First public release. Host-side + guest-side debloat in one file, with backup and undo.
+## 0.1.0 — historical script release
 
-### Added
-- **One-file tool** (`blueStackDebloat.cmd` launcher + `blueStackDebloat.ps1` engine) that resolves your
-  BlueStacks install/data paths and adb port from the registry + `bluestacks.conf` (same proven resolution
-  as [BluestacksRoot](https://github.com/Jordan231111/BluestacksRoot)) — honours custom install locations.
-- **Host-side debloat:** closes BlueStacks safely, backs up `bluestacks.conf` (UTF-8, no BOM), and disables
-  ad / promotion / "click for rewards" / recommendation config keys (discovered by scanning the conf so it
-  adapts across versions).
-- **Guest-side debloat:** null-routes ad/analytics/telemetry domains in the guest `hosts` file, and disables
-  preinstalled junk apps via `pm disable-user --user 0` (with `pm list packages` discovery + a curated
-  bloat-pattern filter, so it adapts to what's actually installed).
-- **Backups + Undo:** every change is saved to a timestamped backup folder; the **Undo** option restores
-  `bluestacks.conf`, the guest `hosts` file, and re-enables disabled packages.
-- **`--DryRun`/preview:** list exactly what *would* change before changing anything.
+- Initial CMD launcher and PowerShell engine.
+- Host configuration changes, Android package/hosts changes, and backup/undo.
 
-### Notes
-- This initial release uses **runtime discovery** rather than hardcoded keys/package names so it adapts to
-  your BlueStacks version. The curated bloat-match patterns in `blueStackDebloat.ps1` are a starting set —
-  review and extend them for your setup (PRs/issues welcome).
-- The guest-disk parts (hosts file, removing system apps) persist best alongside the version-proof
-  HD-Player anti-tamper patch from [BluestacksRoot](https://github.com/Jordan231111/BluestacksRoot) on
-  BlueStacks 5.22+, which otherwise reverts/kills tampered instances.
+The Rust release replaces this implementation and its broader network rules.
