@@ -13,7 +13,14 @@ use std::{
     time::{Duration, Instant},
 };
 use sysinfo::{ProcessesToUpdate, System};
-use windows_sys::Win32::System::{Environment::ExpandEnvironmentStringsW, Services::*};
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, WAIT_OBJECT_0},
+    System::{
+        Environment::ExpandEnvironmentStringsW,
+        Services::*,
+        Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+    },
+};
 use winreg::{RegKey, enums::*};
 
 fn within(path: &Path, root: &Path) -> bool {
@@ -90,7 +97,24 @@ fn processes(install: &Installation, roots: &[PathBuf]) -> Result<Vec<Process>> 
             });
         }
     }
-    Ok(found.into_values().collect())
+    Ok(found
+        .into_values()
+        .filter(|process| !has_exited(process.pid))
+        .collect())
+}
+
+fn has_exited(pid: u32) -> bool {
+    // Windows can retain an exited process in enumeration while a parent still
+    // holds its handle. A signaled process object is definitive shutdown evidence.
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return unsafe { GetLastError() } == ERROR_INVALID_PARAMETER;
+    }
+    let exited = unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0;
+    unsafe {
+        CloseHandle(handle);
+    }
+    exited
 }
 
 fn may_stop(process: &Process, roots: &[PathBuf]) -> bool {
@@ -465,11 +489,16 @@ mod tests {
             version: "fixture".into(),
             source: "fixture".into(),
         };
-        let result = stop(&install, &mut |_| {});
+        let mut shutdown_log = Vec::new();
+        let result = stop(&install, &mut |line| shutdown_log.push(line));
         let stopped_service = service.0.try_wait().unwrap().is_some();
         let stopped_adb = adb.0.try_wait().unwrap().is_some();
         let retained_other = unrelated.0.try_wait().unwrap().is_none();
-        result.unwrap();
+        assert!(
+            result.is_ok(),
+            "{result:?}; log={shutdown_log:?}; remaining={:?}",
+            processes(&install, &roots(&install, &[]))
+        );
         assert!(stopped_service && stopped_adb && retained_other);
     }
 }
