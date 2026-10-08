@@ -6,7 +6,7 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::{Ipv4Addr, Ipv6Addr},
     path::PathBuf,
 };
 use windows_sys::Win32::{
@@ -135,54 +135,9 @@ pub fn hosts_path() -> PathBuf {
     PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
         .join("System32/drivers/etc/hosts")
 }
-pub const START: &str = "# BEGIN BLUESTACKS-DEBLOAT";
-pub const END: &str = "# END BLUESTACKS-DEBLOAT";
-pub const DOMAINS: &[&str] = &["ads.bluestacks.com", "adsdk.bluestacks.com"];
+pub use crate::hosts::{DOMAINS, END, START};
 pub fn hosts_block(input: &[u8], domains: &[&str]) -> Result<Vec<u8>> {
-    let original = std::str::from_utf8(input)?;
-    let nl = if original.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
-    let starts: Vec<_> = original.match_indices(START).collect();
-    let ends: Vec<_> = original.match_indices(END).collect();
-    ensure!(
-        starts.len() == ends.len() && starts.len() <= 1,
-        "Malformed or duplicate managed hosts block"
-    );
-    let mut output = original.to_owned();
-    if let (Some((start, _)), Some((end, _))) = (starts.first(), ends.first()) {
-        ensure!(start < end, "Malformed managed hosts block");
-        let suffix = *end + END.len();
-        let suffix = suffix
-            + if original[suffix..].starts_with("\r\n") {
-                2
-            } else if original[suffix..].starts_with('\n') {
-                1
-            } else {
-                0
-            };
-        output.replace_range(*start..suffix, "");
-    }
-    if !output.is_empty() && !output.ends_with('\n') {
-        output.push_str(nl);
-    }
-    output.push_str(START);
-    output.push_str(nl);
-    for d in domains {
-        ensure!(
-            d.contains('.')
-                && d.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-                && d.parse::<IpAddr>().is_err(),
-            "Invalid domain"
-        );
-        output.push_str(&format!("0.0.0.0 {d}{nl}:: {d}{nl}"));
-    }
-    output.push_str(END);
-    output.push_str(nl);
-    Ok(output.into_bytes())
+    crate::hosts::update(input, domains)
 }
 pub fn export(install: &Installation) -> Result<PathBuf> {
     let dir = platform::state_dir().join("reports");

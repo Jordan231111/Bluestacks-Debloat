@@ -30,6 +30,8 @@ The interface adapts to smaller windows and Windows display scaling, with adjust
 
 Maximum selects options across tabs and includes a reversible player patch to keep feature choices after restart; apply each stage when prompted. Use **Backups & restore** to undo debloat changes, or the Root tab for disk recovery.
 
+If one independent option fails, successful changes stay applied. The app shows what applied, failed or was skipped. Related cloud-removal steps and root-installation stages stay together for recovery.
+
 ## Before you use it
 
 - Tested on **BlueStacks 5.22.265.1013**, with Android 9, 11, and 13 instances. The complete fresh-root cycle was tested on Android 11. See the [validation record](docs/VALIDATION.md).

@@ -92,7 +92,10 @@ fn read(root: &Path, path: &Path, kind: Kind) -> Result<Value> {
     Ok(journal)
 }
 fn finished(status: &str) -> bool {
-    matches!(status, "applied" | "restored" | "Complete" | "Restored")
+    matches!(
+        status,
+        "applied" | "partial" | "restored" | "Complete" | "Restored"
+    )
 }
 
 pub fn list(root: &Path) -> Result<Vec<Record>> {
@@ -811,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_rollback_also_enforces_retention() {
+    fn partial_apply_keeps_successful_changes_and_enforces_retention() {
         use crate::transaction::{Operation, Plan, Target, Value as Stored};
         use std::os::windows::fs::OpenOptionsExt;
         if !platform::is_admin() {
@@ -843,6 +846,8 @@ mod tests {
             .open(&blocked)
             .unwrap();
         let plan = Plan {
+            issues: vec![],
+            atomic_groups: vec![],
             installation: crate::discovery::Installation {
                 install_dir: temp.path().join("install"),
                 data_dir: temp.path().into(),
@@ -874,15 +879,17 @@ mod tests {
         let result = transaction::apply(plan, temp.path(), |_| {});
         drop(held);
         fs::set_permissions(&blocked, original_permissions).unwrap();
-        assert!(format!("{:#}", result.unwrap_err()).contains("Rollback: complete"));
-        assert_eq!(fs::read(source).unwrap(), b"original");
+        let result = result.unwrap();
+        assert_eq!((result.applied, result.failed, result.skipped), (1, 1, 0));
+        assert!(!result.needs_recovery);
+        assert_eq!(fs::read(source).unwrap(), b"changed");
         assert_eq!(fs::read(blocked).unwrap(), b"protected");
         let records = list(temp.path()).unwrap();
         assert_eq!(records.len(), KEEP_LATEST);
         assert!(
             records
                 .iter()
-                .any(|r| r.title == "Rollback fixture" && r.status == "restored")
+                .any(|r| r.title == "Rollback fixture" && r.status == "partial")
         );
     }
 
@@ -904,6 +911,8 @@ mod tests {
         let live = temp.path().join("current.txt");
         fs::write(&live, b"before").unwrap();
         let plan = transaction::Plan {
+            issues: vec![],
+            atomic_groups: vec![],
             installation: crate::discovery::Installation {
                 install_dir: temp.path().join("install"),
                 data_dir: temp.path().into(),
@@ -920,9 +929,49 @@ mod tests {
                 after: transaction::Value::Bytes(b"after".to_vec()),
             }],
         };
-        let backup = transaction::apply(plan, temp.path(), |_| {}).unwrap();
+        let backup = transaction::apply(plan, temp.path(), |_| {})
+            .unwrap()
+            .backup
+            .unwrap();
         assert!(backup.is_dir());
         verify(temp.path(), &backup).unwrap();
         assert_eq!(list(temp.path()).unwrap().len(), KEEP_LATEST);
+    }
+
+    #[test]
+    fn new_journal_missing_checksum_is_not_misclassified_as_legacy() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("journal.json");
+        platform::write_journal(&path, &serde_json::json!({"schema":1,"status":"applied"}))
+            .unwrap();
+        let mut raw: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        raw.as_object_mut().unwrap().remove("_journal_sha256");
+        fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+        assert!(
+            format!("{:#}", platform::read_journal(&path).unwrap_err())
+                .contains("checksum is missing")
+        );
+        fs::write(&path, br#"{"schema":1,"status":"applied"}"#).unwrap();
+        assert_eq!(platform::read_journal(&path).unwrap()["status"], "applied");
+    }
+    #[test]
+    fn oversized_and_unknown_format_journals_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("journal.json");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(17 * 1024 * 1024)
+            .unwrap();
+        assert!(
+            format!("{:#}", platform::read_journal(&path).unwrap_err()).contains("supported size")
+        );
+        fs::write(
+            &path,
+            br#"{"_journal_format":99,"_journal_sha256":"unknown"}"#,
+        )
+        .unwrap();
+        assert!(
+            format!("{:#}", platform::read_journal(&path).unwrap_err()).contains("Unsupported")
+        );
     }
 }

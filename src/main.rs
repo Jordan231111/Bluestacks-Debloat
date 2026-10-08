@@ -254,9 +254,12 @@ fn run_cli() -> Result<()> {
             o.enable_adb |= enable_adb;
             o.performance = performance;
             let plan = engine::host_plan(&snapshot, selected()?, &o)?;
-            json(&plan.summary())?;
-            if apply && !plan.operations.is_empty() {
-                transaction::apply(plan, &root, |s| eprintln!("{s}"))?;
+            if apply {
+                let result = transaction::apply(plan, &root, |s| eprintln!("{s}"))?;
+                json(&result)?;
+                anyhow::ensure!(!result.has_issues(), "{}", result.summary());
+            } else {
+                json(&plan.summary())?;
             }
         }
         Some(Action::Packages) => json(&engine::guest_scan(&install, selected()?)?.1)?,
@@ -278,9 +281,12 @@ fn run_cli() -> Result<()> {
             package.sort();
             package.dedup();
             let plan = engine::guest_plan(&install, selected()?, &package, animations)?;
-            json(&plan.summary())?;
-            if apply && !plan.operations.is_empty() {
-                transaction::apply(plan, &root, |s| eprintln!("{s}"))?;
+            if apply {
+                let result = transaction::apply(plan, &root, |s| eprintln!("{s}"))?;
+                json(&result)?;
+                anyhow::ensure!(!result.has_issues(), "{}", result.summary());
+            } else {
+                json(&plan.summary())?;
             }
         }
         Some(Action::Network) => json(&network::report(&install)?)?,
@@ -290,9 +296,12 @@ fn run_cli() -> Result<()> {
             isolate_launcher,
         }) => {
             let plan = engine::root_plan(&install, selected()?, hosts, isolate_launcher)?;
-            json(&plan.summary())?;
-            if apply && !plan.operations.is_empty() {
-                transaction::apply(plan, &root, |s| eprintln!("{s}"))?;
+            if apply {
+                let result = transaction::apply(plan, &root, |s| eprintln!("{s}"))?;
+                json(&result)?;
+                anyhow::ensure!(!result.has_issues(), "{}", result.summary());
+            } else {
+                json(&plan.summary())?;
             }
         }
         Some(Action::PatchInfo) => json(&patch::inspect(&std::fs::read(install.player())?)?)?,

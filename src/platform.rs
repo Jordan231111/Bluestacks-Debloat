@@ -148,8 +148,46 @@ fn run_impl(program: &Path, args: &[String], timeout: Duration, merge: bool) -> 
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write_inner(path, bytes, None)
+}
+
+pub fn atomic_write_checked(path: &Path, expected: Option<&[u8]>, bytes: &[u8]) -> Result<()> {
+    atomic_write_inner(path, bytes, Some(expected))
+}
+
+#[derive(Debug)]
+pub struct WriteConflict(pub String);
+impl std::fmt::Display for WriteConflict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+impl std::error::Error for WriteConflict {}
+
+fn check_file_contents(path: &Path, expected: Option<&[u8]>) -> Result<()> {
+    let current = match fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    if current.as_deref() != expected {
+        return Err(WriteConflict(format!(
+            "{} changed before replacement; its newer contents were preserved",
+            path.display()
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+fn atomic_write_inner(path: &Path, bytes: &[u8], expected: Option<Option<&[u8]>>) -> Result<()> {
+    if let Some(expected) = expected {
+        check_file_contents(path, expected)?;
+    }
     let parent = path.parent().context("File has no parent")?;
-    let temp = parent.join(format!(".bsd-{}.tmp", uuid::Uuid::new_v4()));
+    let id = uuid::Uuid::new_v4();
+    let temp = parent.join(format!(".bsd-{id}.tmp"));
+    let original = parent.join(format!(".bsd-{id}.original"));
     let result = (|| {
         let mut file = OpenOptions::new()
             .write(true)
@@ -158,9 +196,21 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
+        if let Some(expected) = expected {
+            check_file_contents(path, expected)?;
+        }
         // Windows refuses to replace a read-only destination even for administrators.
         // Keep its attributes and DACL; only relax read-only while replacing it.
         let mut attributes = FileAttributes::prepare(path)?;
+        if let Some(expected) = expected
+            && expected.is_some() != attributes.original.is_some()
+        {
+            return Err(WriteConflict(format!(
+                "{} appeared or disappeared during replacement; refusing to overwrite it",
+                path.display()
+            ))
+            .into());
+        }
         // ReplaceFile preserves the destination's DACL, streams and other metadata.
         let deadline = Instant::now() + Duration::from_secs(3);
         let replace = loop {
@@ -169,7 +219,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
                     ReplaceFileW(
                         wide(path).as_ptr(),
                         wide(&temp).as_ptr(),
-                        std::ptr::null(),
+                        wide(&original).as_ptr(),
                         0,
                         std::ptr::null(),
                         std::ptr::null(),
@@ -190,6 +240,25 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
                 std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
+            // ReplaceFile can move the original before a later rename fails.
+            // Retain its explicit backup and recover only into an absent name.
+            if original.exists() && !path.exists() {
+                let restored = unsafe {
+                    MoveFileExW(
+                        wide(&original).as_ptr(),
+                        wide(path).as_ptr(),
+                        MOVEFILE_WRITE_THROUGH,
+                    )
+                };
+                if restored == 0 {
+                    break Err(anyhow::anyhow!(
+                        "Replace {}: {error}; original retained at {}: {}",
+                        path.display(),
+                        original.display(),
+                        std::io::Error::last_os_error()
+                    ));
+                }
+            }
             break Err(error).with_context(|| format!("Replace {}", path.display()));
         };
         let restored = attributes.restore();
@@ -205,13 +274,29 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
             "Read-back verification failed: {}",
             path.display()
         );
+        if original.exists() {
+            fs::remove_file(&original).with_context(|| {
+                format!(
+                    "Updated file verified, but its temporary original could not be removed: {}",
+                    original.display()
+                )
+            })?;
+        }
         Ok(())
     })();
-    if temp.exists() {
+    if temp.exists() && !original.exists() {
         let _ = fs::remove_file(&temp);
     }
-    result
+    result.with_context(|| {
+        if original.exists() {
+            format!("Original file recovery retained at {}", original.display())
+        } else {
+            format!("Write {}", path.display())
+        }
+    })
 }
+
+const MAX_JOURNAL_BYTES: u64 = 16 * 1024 * 1024;
 
 struct FileAttributes<'a> {
     path: &'a Path,
@@ -291,14 +376,46 @@ pub fn write_journal(path: &Path, value: &impl serde::Serialize) -> Result<()> {
     let mut value = serde_json::to_value(value)?;
     let object = value.as_object_mut().context("Journal must be an object")?;
     object.remove("_journal_sha256");
+    object.insert("_journal_format".into(), 1.into());
     let checksum = hash(&serde_json::to_vec(&value)?);
     value["_journal_sha256"] = checksum.into();
-    atomic_write(path, &serde_json::to_vec_pretty(&value)?)
+    let bytes = serde_json::to_vec_pretty(&value)?;
+    ensure!(
+        bytes.len() as u64 <= MAX_JOURNAL_BYTES,
+        "Recovery journal exceeds the supported size; no journal was written"
+    );
+    atomic_write(path, &bytes)
 }
 
 pub fn read_journal(path: &Path) -> Result<serde_json::Value> {
-    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)?;
+    ensure!(
+        file.metadata()?.len() <= MAX_JOURNAL_BYTES,
+        "Recovery journal exceeds the supported size; inspection stopped"
+    );
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(MAX_JOURNAL_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= MAX_JOURNAL_BYTES,
+        "Recovery journal grew beyond the supported size"
+    );
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
     let object = value.as_object_mut().context("Journal must be an object")?;
+    if let Some(format) = object.get("_journal_format") {
+        ensure!(
+            format.as_u64() == Some(1),
+            "Unsupported recovery journal format"
+        );
+        ensure!(
+            object.contains_key("_journal_sha256"),
+            "Recovery journal checksum is missing"
+        );
+    }
     if let Some(checksum) = object.remove("_journal_sha256") {
         ensure!(
             checksum.as_str() == Some(hash(&serde_json::to_vec(&value)?).as_str()),

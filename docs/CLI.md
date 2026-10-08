@@ -4,6 +4,8 @@ Run `BluestacksDebloat.exe` without arguments for the desktop interface. Run `--
 
 Use an administrator PowerShell window for CLI commands. Double-clicking the app requests UAC automatically. Host apply/restore and root operations stop BlueStacks automatically; `close` performs the same verified shutdown without applying settings.
 
+Preview commands return the plan and any unavailable options. Apply returns one JSON result with applied, unchanged, failed and skipped counts, issues and a recovery path. A partial result exits nonzero so scripts can detect it; successfully applied independent changes are retained. Review again to retry remaining options.
+
 ```powershell
 .\BluestacksDebloat.exe scan
 .\BluestacksDebloat.exe --instance Pie64 host --maximum

@@ -72,10 +72,82 @@ pub struct Plan {
     pub title: String,
     pub operations: Vec<Operation>,
     pub notes: Vec<String>,
+    pub issues: Vec<ApplyIssue>,
+    /// Contiguous dependent operations, such as one cloud product's files and registrations.
+    pub atomic_groups: Vec<std::ops::Range<usize>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplyIssue {
+    pub label: String,
+    pub error: String,
+    pub changes: usize,
+    pub skipped: bool,
+}
+impl ApplyIssue {
+    pub fn failed(label: impl Into<String>, error: impl std::fmt::Display, changes: usize) -> Self {
+        Self {
+            label: label.into(),
+            error: error.to_string(),
+            changes,
+            skipped: false,
+        }
+    }
+    pub fn skipped(
+        label: impl Into<String>,
+        error: impl std::fmt::Display,
+        changes: usize,
+    ) -> Self {
+        Self {
+            skipped: true,
+            ..Self::failed(label, error, changes)
+        }
+    }
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct ApplyReport {
+    pub backup: Option<PathBuf>,
+    pub applied: usize,
+    pub unchanged: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub needs_recovery: bool,
+    pub issues: Vec<ApplyIssue>,
+}
+impl ApplyReport {
+    pub fn has_issues(&self) -> bool {
+        !self.issues.is_empty() || self.needs_recovery
+    }
+    pub fn summary(&self) -> String {
+        if self.has_issues() {
+            format!(
+                "{} applied and verified; {} already set; {} failed; {} skipped{}",
+                self.applied,
+                self.unchanged,
+                self.failed,
+                self.skipped,
+                if self.needs_recovery {
+                    "; recovery needs attention"
+                } else {
+                    ""
+                }
+            )
+        } else if self.applied == 0 {
+            "No changes needed; selected values are verified.".into()
+        } else {
+            format!("{} changes applied and verified.", self.applied)
+        }
+    }
+}
+pub fn change_count(target: &Target) -> usize {
+    match target {
+        Target::Config { edits, .. } => edits.len(),
+        _ => 1,
+    }
 }
 impl Plan {
     pub fn summary(&self) -> serde_json::Value {
-        serde_json::json!({"title":self.title,"installation":self.installation,"instance":self.guest.as_ref().map(|g|&g.instance),"notes":self.notes,"changes":self.operations.iter().map(|o|serde_json::json!({"label":o.label,"target":o.target,"before":describe(&o.before),"after":describe(&o.after)})).collect::<Vec<_>>()})
+        serde_json::json!({"title":self.title,"installation":self.installation,"instance":self.guest.as_ref().map(|g|&g.instance),"notes":self.notes,"issues":self.issues,"changes":self.operations.iter().map(|o|serde_json::json!({"label":o.label,"target":o.target,"before":describe(&o.before),"after":describe(&o.after)})).collect::<Vec<_>>()})
     }
 }
 fn describe(v: &Value) -> String {
@@ -109,6 +181,8 @@ pub struct Journal {
     pub installation: Installation,
     pub guest: Option<Guest>,
     entries: Vec<Entry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    issues: Vec<ApplyIssue>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BackupInfo {
@@ -171,6 +245,26 @@ impl Backend {
                 );
                 Ok(Value::Present(exists))
             }
+        }
+    }
+    fn write_checked(&self, target: &Target, before: &Value, after: &Value) -> Result<()> {
+        if self.read(target)? != *before {
+            return Err(platform::WriteConflict(
+                "Target changed before writing; its newer value was preserved".into(),
+            )
+            .into());
+        }
+        if let (Target::Config { path, .. } | Target::File { path }, Value::Bytes(bytes)) =
+            (target, after)
+        {
+            let expected = match before {
+                Value::Bytes(bytes) => Some(bytes.as_slice()),
+                Value::Missing => None,
+                _ => bail!("Invalid previous file state"),
+            };
+            platform::atomic_write_checked(path, expected, bytes)
+        } else {
+            self.write(target, after)
         }
     }
     fn write(&self, t: &Target, v: &Value) -> Result<()> {
@@ -452,146 +546,39 @@ fn save(dir: &Path, journal: &Journal) -> Result<()> {
     platform::write_journal(&dir.join("journal.json"), journal)
 }
 
-pub fn apply(plan: Plan, root: &Path, mut log: impl FnMut(String)) -> Result<PathBuf> {
-    ensure!(!plan.operations.is_empty(), "No changes needed");
-    let mut targets = std::collections::BTreeSet::new();
-    for op in &plan.operations {
-        let key = serde_json::to_string(&op.target)?
-            .to_ascii_lowercase()
-            .replace('/', "\\");
-        ensure!(
-            targets.insert(key),
-            "Duplicate operation target: {}",
-            op.label
-        );
+mod apply;
+pub use apply::apply;
+fn restore_entry(
+    dir: &Path,
+    entry: &Entry,
+    backend: &Backend,
+    log: &mut impl FnMut(String),
+) -> Result<()> {
+    let before = load_value(dir, &entry.before)?;
+    let after = load_value(dir, &entry.after)?;
+    let current = backend.read(&entry.target)?;
+    if current == before {
+        return Ok(());
     }
-    let _lock = platform::lock(root)?;
-    if plan.guest.is_none() {
-        platform::require_admin()?;
-        let cloud_paths = plan
-            .operations
-            .iter()
-            .filter_map(|op| match &op.target {
-                Target::Directory { path, .. } => Some(path.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        crate::shutdown::stop_with_cloud(&plan.installation, &cloud_paths, &mut log)?;
-    }
-    let backend = Backend::new(plan.guest.as_ref())?;
-    let id = format!(
-        "{}-{}",
-        chrono::Utc::now().format("%Y%m%d-%H%M%S"),
-        uuid::Uuid::new_v4()
-    );
-    let dir = root.join("backups").join(&id);
-    fs::create_dir_all(&dir)?;
-    let mut journal = Journal {
-        schema: 1,
-        id,
-        title: plan.title,
-        created: chrono::Utc::now().to_rfc3339(),
-        status: "preparing".into(),
-        installation: plan.installation,
-        guest: plan.guest,
-        entries: Vec::new(),
-    };
-    // Prepare every backup before the first mutation. Stale previews fail here.
-    for (i, mut op) in plan.operations.into_iter().enumerate() {
-        // Running cloud apps can update logs/databases during review. Snapshot the
-        // current directory only after automatic shutdown and before the first write.
-        if let Target::Directory {
-            path, fingerprint, ..
-        } = &mut op.target
-            && fingerprint.is_empty()
-        {
-            *fingerprint = tree_hash(path)?;
-        }
-        let current = backend.read(&op.target)?;
-        if let Target::Config { edits, .. } = &op.target {
-            let Value::Bytes(ref bytes) = current else {
-                bail!("Config disappeared")
-            };
-            op.after =
-                Value::Bytes(Config::parse(String::from_utf8(bytes.clone())?)?.edit(edits, false)?);
-            op.before = current;
+    let restored =
+        if let (Target::Config { edits, .. }, Value::Bytes(current)) = (&entry.target, &current) {
+            Value::Bytes(Config::parse(String::from_utf8(current.clone())?)?.edit(edits, true)?)
         } else {
             ensure!(
-                current == op.before,
-                "{} changed since preview; preview again",
-                op.label
+                current == after,
+                "{} was modified after this operation; keeping the newer value",
+                entry.label
             );
-        }
-        journal.entries.push(Entry {
-            label: op.label,
-            target: op.target,
-            before: save_value(&dir, &format!("{i:03}-before"), &op.before)?,
-            after: save_value(&dir, &format!("{i:03}-after"), &op.after)?,
-            status: "prepared".into(),
-            error: None,
-        });
-    }
-    journal.status = "applying".into();
-    save(&dir, &journal)?;
-    for i in 0..journal.entries.len() {
-        let result = (|| -> Result<()> {
-            let e = &journal.entries[i];
-            let before = load_value(&dir, &e.before)?;
-            let after = load_value(&dir, &e.after)?;
-            ensure!(
-                backend.read(&e.target)? == before,
-                "{} changed during apply",
-                e.label
-            );
-            journal.entries[i].status = "applying".into();
-            save(&dir, &journal)?;
-            let e = &journal.entries[i];
-            log(format!("Applying: {}", e.label));
-            backend.write(&e.target, &after)?;
-            ensure!(
-                backend.read(&e.target)? == after,
-                "Verification failed: {}",
-                e.label
-            );
-            journal.entries[i].status = "applied".into();
-            save(&dir, &journal)?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            journal.entries[i].error = Some(format!("{error:#}"));
-            journal.status = "failed".into();
-            let _ = save(&dir, &journal);
-            log(format!(
-                "Apply failed. Restoring completed changes: {error:#}"
-            ));
-            let rollback = restore_entries(&dir, &mut journal, &backend, &mut log);
-            if rollback.is_ok() {
-                crate::backup_cleanup::finish_operation(root, &_lock, &dir, &mut log);
-            }
-            bail!(
-                "Apply failed: {error:#}. Rollback: {}. Backup: {}",
-                match rollback {
-                    Ok(()) => "complete".into(),
-                    Err(e) => format!("needs attention: {e:#}"),
-                },
-                dir.display()
-            );
-        }
-    }
-    journal.status = "applied".into();
-    if let Err(error) = save(&dir, &journal) {
-        let result = restore_entries(&dir, &mut journal, &backend, &mut log);
-        if result.is_ok() {
-            crate::backup_cleanup::finish_operation(root, &_lock, &dir, &mut log);
-        }
-        bail!(
-            "Could not finalize journal: {error:#}. Rollback: {result:?}. Backup: {}",
-            dir.display()
-        );
-    }
-    log(format!("Verified. Backup: {}", dir.display()));
-    crate::backup_cleanup::finish_operation(root, &_lock, &dir, &mut log);
-    Ok(dir)
+            before
+        };
+    log(format!("Restoring: {}", entry.label));
+    backend.write_checked(&entry.target, &current, &restored)?;
+    ensure!(
+        backend.read(&entry.target)? == restored,
+        "Restore verification failed: {}",
+        entry.label
+    );
+    Ok(())
 }
 fn restore_entries(
     dir: &Path,
@@ -601,38 +588,13 @@ fn restore_entries(
 ) -> Result<()> {
     let mut failures = Vec::new();
     for i in (0..journal.entries.len()).rev() {
-        if matches!(journal.entries[i].status.as_str(), "prepared" | "restored") {
+        if matches!(
+            journal.entries[i].status.as_str(),
+            "prepared" | "restored" | "not_applied"
+        ) {
             continue;
         }
-        let result = (|| -> Result<()> {
-            let e = &journal.entries[i];
-            let before = load_value(dir, &e.before)?;
-            let after = load_value(dir, &e.after)?;
-            let current = backend.read(&e.target)?;
-            if current == before {
-                return Ok(());
-            }
-            let restored = if let (Target::Config { edits, .. }, Value::Bytes(current)) =
-                (&e.target, &current)
-            {
-                Value::Bytes(Config::parse(String::from_utf8(current.clone())?)?.edit(edits, true)?)
-            } else {
-                ensure!(
-                    current == after,
-                    "{} was modified after this operation; keeping the newer value",
-                    e.label
-                );
-                before
-            };
-            log(format!("Restoring: {}", e.label));
-            backend.write(&e.target, &restored)?;
-            ensure!(
-                backend.read(&e.target)? == restored,
-                "Restore verification failed: {}",
-                e.label
-            );
-            Ok(())
-        })();
+        let result = restore_entry(dir, &journal.entries[i], backend, log);
         match result {
             Ok(()) => {
                 journal.entries[i].status = "restored".into();
@@ -847,6 +809,8 @@ mod tests {
         fs::create_dir(&path).unwrap();
         fs::write(path.join("cloud.exe"), b"cloud app").unwrap();
         let plan = Plan {
+            issues: vec![],
+            atomic_groups: vec![],
             installation: Installation {
                 install_dir: temp.path().join("install"),
                 data_dir: temp.path().into(),
@@ -868,7 +832,7 @@ mod tests {
             }],
         };
         fs::write(path.join("runtime.log"), b"written after review").unwrap();
-        let backup = apply(plan, temp.path(), |_| {}).unwrap();
+        let backup = apply(plan, temp.path(), |_| {}).unwrap().backup.unwrap();
         assert!(!path.exists());
         assert_eq!(
             fs::read(stash.join("runtime.log")).unwrap(),
@@ -900,6 +864,7 @@ mod tests {
             source: "test".into(),
         };
         let mut journal = Journal {
+            issues: vec![],
             schema: 1,
             id: "test".into(),
             title: "test".into(),
@@ -955,6 +920,7 @@ mod tests {
         let p = t.path().join("file");
         fs::write(&p, b"new").unwrap();
         let mut journal = Journal {
+            issues: vec![],
             schema: 1,
             id: "conflict".into(),
             title: "test".into(),
@@ -1026,6 +992,7 @@ mod tests {
             });
         }
         let mut journal = Journal {
+            issues: vec![],
             schema: 1,
             id: "storage-failure".into(),
             title: "test".into(),

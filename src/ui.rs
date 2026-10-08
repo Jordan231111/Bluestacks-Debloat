@@ -44,7 +44,7 @@ struct Preferences {
 enum Reply {
     Scanned(Snapshot),
     Preview(Plan),
-    Applied { changes: usize, backup: PathBuf },
+    Applied(transaction::ApplyReport),
     Packages(Vec<Package>),
     Network(network::Report),
     Backups(Vec<backup_cleanup::Record>),
@@ -257,7 +257,16 @@ impl App {
                                 }
                                 Reply::Preview(p) => {
                                     let count = Self::change_count(&p);
-                                    self.status = if count == 0 {
+                                    self.status = if !p.issues.is_empty() {
+                                        format!(
+                                            "{} ready; {} option(s) unavailable. Review the details before applying.",
+                                            Self::changes(count),
+                                            p.issues
+                                                .iter()
+                                                .map(|issue| issue.changes)
+                                                .sum::<usize>()
+                                        )
+                                    } else if count == 0 {
                                         "Review complete. No changes needed.".into()
                                     } else {
                                         format!(
@@ -273,19 +282,13 @@ impl App {
                                     self.applied = None;
                                     self.scroll_to_preview = true;
                                 }
-                                Reply::Applied { changes, backup } => {
-                                    self.status =
-                                        format!("{} applied and verified.", Self::changes(changes));
-                                    self.log(format!(
-                                        "{} Recovery backup: {}",
-                                        self.status,
-                                        backup.display()
-                                    ));
+                                Reply::Applied(report) => {
+                                    self.status = report.summary();
+                                    self.log(self.status.clone());
                                     self.plan = None;
                                     self.applied = None;
                                     self.applied = Some(action_bar::AppliedChanges {
-                                        changes,
-                                        backup,
+                                        report,
                                         time: chrono::Local::now().format("%H:%M").to_string(),
                                     });
                                     self.backups =
@@ -703,6 +706,19 @@ impl App {
         self.preview_details(ui);
     }
     fn preview_details(&mut self, ui: &mut egui::Ui) {
+        if let Some(applied) = &self.applied
+            && !applied.report.issues.is_empty()
+        {
+            ui.group(|ui| {
+                ui.strong("Some options need attention");
+                ui.label("Successful independent changes remain applied. Review again to retry the remaining options.");
+                egui::ScrollArea::vertical().id_salt("apply_issues").max_height(150.0).show(ui, |ui| {
+                    for issue in &applied.report.issues {
+                        ui.add(egui::Label::new(RichText::new(format!("{}: {}", issue.label, issue.error)).color(Color32::from_rgb(244, 204, 128))).wrap());
+                    }
+                });
+            });
+        }
         if let Some(plan) = &self.plan {
             ui.add_space(14.0);
             ui.separator();
@@ -715,6 +731,18 @@ impl App {
                 self.scroll_to_preview = false;
             }
             ui.label("This review has made no changes. Apply using the fixed bottom bar.");
+            if !plan.issues.is_empty() {
+                ui.strong("Unavailable options will be skipped; other changes can still apply.");
+                for issue in &plan.issues {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("{}: {}", issue.label, issue.error))
+                                .color(Color32::from_rgb(244, 204, 128)),
+                        )
+                        .wrap(),
+                    );
+                }
+            }
             for op in &plan.operations {
                 ui.label(RichText::new(&op.label).color(ACCENT));
                 ui.collapsing(format!("Details: {}", op.label), |ui| {

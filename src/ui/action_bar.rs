@@ -7,8 +7,7 @@ pub(super) enum ReviewAction {
 }
 
 pub(super) struct AppliedChanges {
-    pub changes: usize,
-    pub backup: PathBuf,
+    pub report: transaction::ApplyReport,
     pub time: String,
 }
 
@@ -61,10 +60,27 @@ impl App {
             )
         } else if let Some(count) = count {
             if count == 0 {
+                let unavailable = self
+                    .plan
+                    .as_ref()
+                    .is_some_and(|plan| !plan.issues.is_empty());
                 (
-                    "No changes needed".into(),
-                    "Selected settings are already configured or unavailable in this build.",
-                    ACCENT,
+                    if unavailable {
+                        "Selected options need attention"
+                    } else {
+                        "No changes needed"
+                    }
+                    .into(),
+                    if unavailable {
+                        "Review the unavailable options below. Nothing has been applied."
+                    } else {
+                        "Selected settings are already configured."
+                    },
+                    if unavailable {
+                        Color32::from_rgb(244, 204, 128)
+                    } else {
+                        ACCENT
+                    },
                 )
             } else {
                 let hint = if self.plan.as_ref().is_some_and(|p| p.guest.is_none()) {
@@ -77,7 +93,18 @@ impl App {
                     "Review only. Click Apply to change the selected Android instance."
                 };
                 (
-                    format!("{} ready — not applied yet", Self::changes(count)),
+                    format!(
+                        "{} ready — not applied yet{}",
+                        Self::changes(count),
+                        self.plan
+                            .as_ref()
+                            .filter(|plan| !plan.issues.is_empty())
+                            .map(|plan| format!(
+                                "; {} unavailable",
+                                plan.issues.iter().map(|issue| issue.changes).sum::<usize>()
+                            ))
+                            .unwrap_or_default()
+                    ),
                     hint,
                     Color32::from_rgb(244, 204, 128),
                 )
@@ -85,12 +112,20 @@ impl App {
         } else if let Some(applied) = &self.applied {
             (
                 format!(
-                    "{} applied and verified at {}",
-                    Self::changes(applied.changes),
+                    "{} at {}",
+                    applied.report.summary().trim_end_matches('.'),
                     applied.time
                 ),
-                "Recovery saved. Use Backups & restore to undo this operation.",
-                ACCENT,
+                if applied.report.has_issues() {
+                    "Successful changes remain applied. Open Activity for errors, then Review to retry the remaining options."
+                } else {
+                    "Recovery saved. Use Backups & restore to undo this operation."
+                },
+                if applied.report.has_issues() {
+                    Color32::from_rgb(244, 204, 128)
+                } else {
+                    ACCENT
+                },
             )
         } else {
             (
@@ -132,8 +167,9 @@ impl App {
                 action = Some(ReviewAction::Apply);
             }
             if let Some(applied) = &self.applied
+                && let Some(backup) = &applied.report.backup
                 && ui.small_button("Open recovery copy").clicked()
-                && let Err(error) = platform::open_folder(&applied.backup)
+                && let Err(error) = platform::open_folder(backup)
             {
                 self.error = Some(format!("{error:#}"));
             }
@@ -193,14 +229,13 @@ impl App {
                     return;
                 }
                 if let Some(plan) = self.plan.take() {
-                    let changes = Self::change_count(&plan);
                     let root = self.root.clone();
                     self.applied = None;
                     self.job(ctx, "Applying and verifying changes…", move |tx| {
-                        let backup = transaction::apply(plan, &root, |s| {
+                        let report = transaction::apply(plan, &root, |s| {
                             let _ = tx.send(Event::Log(s));
                         })?;
-                        Ok(Reply::Applied { changes, backup })
+                        Ok(Reply::Applied(report))
                     });
                 }
             }

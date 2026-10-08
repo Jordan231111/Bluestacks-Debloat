@@ -4,6 +4,7 @@ pub mod cloud;
 pub mod config;
 pub mod discovery;
 pub mod engine;
+pub mod hosts;
 pub mod network;
 pub mod patch;
 pub mod platform;

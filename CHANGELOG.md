@@ -2,6 +2,8 @@
 
 ## 1.0.3 — 2026-10-07
 
+- Keep successful independent changes when another option fails, with applied/failed/skipped counts and recovery.
+- Harden hosts editing against duplicates, conflicting mappings, damaged markers and encoding problems while preserving custom entries.
 - Automatically stop BlueStacks players, managers, ADB and companion services before host changes, restore and rooting.
 - Request Windows administrator access when the app opens.
 - Fix Maximum debloat failing on read-only Windows hosts files; preserve permissions and attributes, and retry brief file locks.

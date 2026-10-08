@@ -6,7 +6,7 @@ Local validation was performed on Windows 10 IoT Enterprise LTSC x64, BlueStacks
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --all-targets -- -D warnings`
-- `cargo test --locked --all-targets`: **48 tests**.
+- `cargo test --locked --all-targets`: **78 tests**.
 - Optimized Windows x64 build with a static MSVC CRT.
 - `cargo audit` (2026-10-07): zero known Rust dependency vulnerabilities. One maintenance advisory remains for the UI's transitive `ttf-parser` 0.25.1 dependency (RUSTSEC-2026-0192); the app uses bundled fonts. This audit does not cover the separate embedded root helper binaries.
 
@@ -15,6 +15,10 @@ Tests cover config byte preservation and stale previews, instance isolation, pre
 Version 1.0.3 adds Windows read-only/hidden/system attribute, DACL and alternate-stream preservation tests; locked-file failure and rollback checks; deferred cloud-snapshot restore; and process ownership/exit-race checks. A native process fixture proves owned BstkSVC/HD-Adb helpers stop while a similarly named process in a sibling folder stays running. The built executable's embedded manifest is checked for `requireAdministrator`.
 
 Feature-persistence tests verify the exact three-byte change, idempotence, composition with the existing integrity patch, and rejection of duplicate endpoints, missing executable references, overlay-only strings and unsupported binaries.
+
+Additional cases cover exact hosts marker boundaries, duplicate rules and input domains, aliases, IPv4/IPv6 loopback blocks, conflicting manual mappings, comments and custom entries inside the managed section, UTF-8 BOM and legacy comment bytes, LF/CRLF, absent final newlines, unsupported encodings and damaged marker pairs. Six hundred generated hosts fixtures check preservation and repeated-edit stability.
+
+Partial-apply tests prove that 22 independent changes survive one locked-file failure and all successful changes restore correctly. Other cases cover dependent-group rollback, stale config keys and external edits, unsupported future player patches, already-completed changes, absent hosts files, unavailable recovery storage, interrupted journal writes, missing checksums, oversized/unknown journal formats and injected recovery values.
 
 ## Live behavior checked
 

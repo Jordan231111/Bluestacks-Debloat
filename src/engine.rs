@@ -3,7 +3,7 @@ use crate::{
     config::{Config, Edit},
     discovery::{self, Installation, Snapshot},
     network, patch, rules,
-    transaction::{self, Operation, Plan, RegistryPath, Target, Value},
+    transaction::{self, ApplyIssue, Operation, Plan, RegistryPath, Target, Value},
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -82,6 +82,8 @@ pub fn host_plan(snapshot: &Snapshot, instance: &str, options: &HostOptions) -> 
     let config = Config::read(&install.conf())?;
     let mut changes = BTreeMap::<String, Edit>::new();
     let mut notes = Vec::new();
+    let mut issues = Vec::new();
+    let mut atomic_groups = Vec::new();
     let mut set = |key: &str, value: &str| {
         if let Some(before) = config.get(key)
             && before != value
@@ -171,63 +173,115 @@ pub fn host_plan(snapshot: &Snapshot, instance: &str, options: &HostOptions) -> 
             key: r"Software\Microsoft\DirectX\UserGpuPreferences".into(),
             name: install.player().to_string_lossy().into(),
         };
-        let before = transaction::read_registry(&p)?;
-        let after = transaction::string_value("GpuPreference=2;");
-        if before != after {
-            operations.push(Operation {
-                label: "Prefer the high-performance GPU for HD-Player (Windows preference)".into(),
-                target: Target::Registry(p),
-                before,
-                after,
-            });
+        match transaction::read_registry(&p) {
+            Ok(before) => {
+                let after = transaction::string_value("GpuPreference=2;");
+                if before != after {
+                    operations.push(Operation {
+                        label: "Prefer the high-performance GPU for HD-Player (Windows preference)"
+                            .into(),
+                        target: Target::Registry(p),
+                        before,
+                        after,
+                    });
+                }
+            }
+            Err(error) => issues.push(ApplyIssue::skipped(
+                "GPU preference",
+                format!("{error:#}"),
+                1,
+            )),
         }
     }
     if options.hosts {
-        let path = network::hosts_path();
-        let bytes = fs::read(&path)?;
-        let after = network::hosts_block(&bytes, network::DOMAINS)?;
-        if bytes != after {
-            operations.push(Operation{label:"Block the listed advertising domains in Windows hosts (affects all Windows apps)".into(),target:Target::File{path},before:Value::Bytes(bytes),after:Value::Bytes(after)});
+        match hosts_operation(network::hosts_path()) {
+            Ok(Some(operation)) => operations.push(operation),
+            Ok(None) => {}
+            Err(error) => issues.push(ApplyIssue::skipped(
+                "Windows hosts filtering",
+                format!("{error:#}"),
+                1,
+            )),
         }
         notes.push("Hosts filtering is optional and system-wide. It does not guarantee filtering inside Android, or cover encrypted DNS, hard-coded IPs or every ad provider. Rewarded in-game ads can stop working.".into());
     }
     if options.patch || options.keep_features {
         let path = install.player();
-        let before = fs::read(&path)?;
-        let mut after = before.clone();
-        let mut patches = Vec::new();
-        if options.patch {
-            let (updated, report) = patch::patched(&after)?;
-            after = updated;
-            patches.push("system-disk integrity checks");
-            notes.push(format!("Integrity patch: {} candidate site(s), {} already patched. Changes affect all instances using this player and invalidate its Authenticode signature.",report.offsets.len(),report.already_patched));
-        }
-        if options.keep_features {
-            let (updated, _) = patch::persistent_features(&after)?;
-            after = updated;
-            patches.push("keep selected feature flags after restart");
-            notes.push("Feature persistence blocks BlueStacks' remote configuration refresh. It affects all instances and changes the player signature. Restore its recovery copy to re-enable that refresh; a BlueStacks update can replace the patch. Windows and Android configuration remain writable.".into());
-        }
-        if before != after {
-            operations.push(Operation {
-                label: format!("Patch player: {}", patches.join("; ")),
-                target: Target::File { path },
-                before: Value::Bytes(before),
-                after: Value::Bytes(after),
-            });
+        let before = fs::read(&path);
+        if let Ok(before) = before {
+            let mut after = before.clone();
+            let mut patches = Vec::new();
+            if options.patch {
+                match patch::patched(&after) {
+                    Ok((updated, report)) => {
+                        after = updated;
+                        patches.push("system-disk integrity checks");
+                        notes.push(format!("Integrity patch: {} candidate site(s), {} already patched. Changes affect all instances using this player and invalidate its Authenticode signature.",report.offsets.len(),report.already_patched));
+                    }
+                    Err(error) => issues.push(ApplyIssue::skipped(
+                        "System-disk integrity patch",
+                        format!("{error:#}"),
+                        1,
+                    )),
+                }
+            }
+            if options.keep_features {
+                match patch::persistent_features(&after) {
+                    Ok((updated, _)) => {
+                        after = updated;
+                        patches.push("keep selected feature flags after restart");
+                        notes.push("Feature persistence blocks BlueStacks' remote configuration refresh. It affects all instances and changes the player signature. Restore its recovery copy to re-enable that refresh; a BlueStacks update can replace the patch. Windows and Android configuration remain writable.".into());
+                    }
+                    Err(error) => issues.push(ApplyIssue::skipped(
+                        "Keep feature choices after restart",
+                        format!("{error:#}; feature flags may reset when BlueStacks starts"),
+                        1,
+                    )),
+                }
+            }
+            if before != after {
+                operations.push(Operation {
+                    label: format!("Patch player: {}", patches.join("; ")),
+                    target: Target::File { path },
+                    before: Value::Bytes(before),
+                    after: Value::Bytes(after),
+                });
+            }
+        } else if let Err(error) = before {
+            issues.push(ApplyIssue::skipped(
+                "Player patches",
+                error,
+                usize::from(options.patch) + usize::from(options.keep_features),
+            ));
         }
     }
     if !options.keep_features && feature_flags_changed {
         notes.push("BlueStacks can reset feature flags when it starts. Enable 'Keep these choices after restart' (included in Maximum) to preserve them using a reversible player patch.".into());
     }
     if options.remove_x || options.remove_services {
-        crate::cloud::add_removal(
+        let mut cloud_operations = Vec::new();
+        let mut cloud_notes = Vec::new();
+        match crate::cloud::add_removal(
             install,
             options.remove_x,
             options.remove_services,
-            &mut operations,
-            &mut notes,
-        )?;
+            &mut cloud_operations,
+            &mut cloud_notes,
+        ) {
+            Ok(()) => {
+                let first = operations.len();
+                operations.extend(cloud_operations);
+                if operations.len() > first {
+                    atomic_groups.push(first..operations.len());
+                }
+                notes.extend(cloud_notes);
+            }
+            Err(error) => issues.push(ApplyIssue::skipped(
+                "Cloud companion removal",
+                format!("{error:#}"),
+                1,
+            )),
+        }
     }
     notes.push("Host-wide settings affect all instances. Instance settings affect only the selected instance. Apply automatically closes BlueStacks and its companions, then verifies shutdown before making changes. Review does not stop anything.".into());
     Ok(Plan {
@@ -236,7 +290,29 @@ pub fn host_plan(snapshot: &Snapshot, instance: &str, options: &HostOptions) -> 
         title: format!("Host debloat • {instance}"),
         operations,
         notes,
+        issues,
+        atomic_groups,
     })
+}
+
+fn hosts_operation(path: std::path::PathBuf) -> Result<Option<Operation>> {
+    let before = match fs::read(&path) {
+        Ok(bytes) => Value::Bytes(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Missing,
+        Err(error) => return Err(error).context("Read Windows hosts"),
+    };
+    let input = match &before {
+        Value::Bytes(bytes) => bytes.as_slice(),
+        _ => b"",
+    };
+    let after = Value::Bytes(network::hosts_block(input, network::DOMAINS)?);
+    Ok((before != after).then_some(Operation {
+        label: "Block the listed advertising domains in Windows hosts (affects all Windows apps)"
+            .into(),
+        target: Target::File { path },
+        before,
+        after,
+    }))
 }
 pub fn guest_scan(install: &Installation, instance: &str) -> Result<(adb::Guest, Vec<Package>)> {
     let adb = Client::connect(install, instance)?;
@@ -252,11 +328,20 @@ pub fn guest_plan(
     let adb = Client::connect(install, instance)?;
     let candidates = adb.candidates()?;
     let mut operations = Vec::new();
+    let mut issues = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for name in selected {
-        let package = candidates
-            .iter()
-            .find(|p| &p.name == name)
-            .context("Requested package is outside the reviewed candidate list")?;
+        if !seen.insert(name) {
+            continue;
+        }
+        let Some(package) = candidates.iter().find(|p| &p.name == name) else {
+            issues.push(ApplyIssue::skipped(
+                format!("Disable {name}"),
+                "Package is unavailable or outside the reviewed candidate list; left unchanged",
+                1,
+            ));
+            continue;
+        };
         if package.enabled <= 1 {
             operations.push(Operation {
                 label: format!("Disable {name} — {}", package.reason),
@@ -268,7 +353,17 @@ pub fn guest_plan(
     }
     if animations {
         for name in adb::ANIMATIONS {
-            let before = adb.setting(name)?;
+            let before = match adb.setting(name) {
+                Ok(before) => before,
+                Err(error) => {
+                    issues.push(ApplyIssue::skipped(
+                        format!("Android animation: {name}"),
+                        format!("{error:#}"),
+                        1,
+                    ));
+                    continue;
+                }
+            };
             let after = Some("0.5".into());
             if before != after {
                 operations.push(Operation {
@@ -282,7 +377,7 @@ pub fn guest_plan(
             }
         }
     }
-    Ok(Plan{installation:install.clone(),guest:Some(adb.guest.clone()),title:format!("Android debloat • {instance}"),operations,notes:vec!["Keep this instance running while applying or restoring Android changes. Disabling preserves app data; restore returns each package to its exact previous enabled state.".into(),"The launcher, Google Play, accounts, billing, keyboard and installed games are excluded from automatic package disabling. Shorter UI animations do not increase game FPS.".into()]})
+    Ok(Plan{issues,atomic_groups:vec![],installation:install.clone(),guest:Some(adb.guest.clone()),title:format!("Android debloat • {instance}"),operations,notes:vec!["Keep this instance running while applying or restoring Android changes. Disabling preserves app data; restore returns each package to its exact previous enabled state.".into(),"The launcher, Google Play, accounts, billing, keyboard and installed games are excluded from automatic package disabling. Shorter UI animations do not increase game FPS.".into()]})
 }
 pub fn refresh(install: &Installation) -> Result<Snapshot> {
     discovery::snapshot(install.clone())
@@ -302,12 +397,73 @@ pub fn root_plan(
     let operations = crate::rooted::operation(&adb, hosts, isolate)?
         .into_iter()
         .collect();
-    Ok(Plan{installation:install.clone(),guest:Some(adb.guest.clone()),title:format!("Root network controls • {instance}"),operations,notes:vec!["Requires working Magisk. The module is stored in this instance's /data; shared Root.vhd is untouched. Restart the instance to activate or remove the hosts overlay.".into(),"Launcher isolation blocks only com.uncube.launcher3's Internet traffic, for both IPv4 and IPv6. Launcher search, promotions and online store functions stop working; Google Play and game packages keep their own connections. Local host-bridge traffic remains allowed.".into(),"Restart Android after applying to refresh the launcher. Restore removes the owned firewall chain immediately; restart Android after restoring a hosts overlay. Existing unrelated firewall rules are preserved.".into()]})
+    Ok(Plan{issues:vec![],atomic_groups:vec![],installation:install.clone(),guest:Some(adb.guest.clone()),title:format!("Root network controls • {instance}"),operations,notes:vec!["Requires working Magisk. The module is stored in this instance's /data; shared Root.vhd is untouched. Restart the instance to activate or remove the hosts overlay.".into(),"Launcher isolation blocks only com.uncube.launcher3's Internet traffic, for both IPv4 and IPv6. Launcher search, promotions and online store functions stop working; Google Play and game packages keep their own connections. Local host-bridge traffic remains allowed.".into(),"Restart Android after applying to refresh the launcher. Restore removes the owned firewall chain immediately; restart Android after restoring a hosts overlay. Existing unrelated firewall rules are preserved.".into()]})
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn missing_hosts_is_created_and_conflicting_hosts_fail_without_modification() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("hosts");
+        let operation = hosts_operation(path.clone()).unwrap().unwrap();
+        assert_eq!(operation.before, Value::Missing);
+        let original = b"192.0.2.5 ads.bluestacks.com\n";
+        fs::write(&path, original).unwrap();
+        assert!(hosts_operation(path.clone()).is_err());
+        assert_eq!(fs::read(path).unwrap(), original);
+    }
+    #[test]
+    fn unknown_future_player_skips_binary_patches_but_keeps_basic_config_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("HD-Player.exe"),
+            b"unknown future executable",
+        )
+        .unwrap();
+        fs::write(temp.path().join("HD-Adb.exe"), b"fixture").unwrap();
+        let original = b"bst.enable_programmatic_ads=\"1\"\nbst.instance.Pie64.cpus=\"2\"\nbst.instance.Pie64.ram=\"2048\"\n";
+        fs::write(temp.path().join("bluestacks.conf"), original).unwrap();
+        let snapshot = Snapshot {
+            installation: Installation {
+                install_dir: temp.path().into(),
+                data_dir: temp.path().into(),
+                version: "future fixture".into(),
+                source: "fixture".into(),
+            },
+            instances: vec![discovery::Instance {
+                name: "Pie64".into(),
+                display_name: "Fixture".into(),
+                adb_port: None,
+                cpus: 2,
+                ram_mb: 2048,
+                fps: 60,
+            }],
+            processes: vec![],
+            cpu_count: 8,
+            ram_mb: 16384,
+            admin: false,
+        };
+        let options = HostOptions {
+            patch: true,
+            keep_features: true,
+            ..HostOptions::default()
+        };
+        let plan = host_plan(&snapshot, "Pie64", &options).unwrap();
+        assert_eq!(plan.issues.len(), 2);
+        assert!(plan.issues.iter().all(|issue| issue.skipped));
+        assert_eq!(plan.operations.len(), 1);
+        assert!(matches!(plan.operations[0].target, Target::Config { .. }));
+        assert_eq!(
+            fs::read(temp.path().join("HD-Player.exe")).unwrap(),
+            b"unknown future executable"
+        );
+        assert_eq!(
+            fs::read(temp.path().join("bluestacks.conf")).unwrap(),
+            original
+        );
+    }
     #[test]
     fn host_rules_do_not_guess_unknown_keys() {
         let t = tempfile::tempdir().unwrap();

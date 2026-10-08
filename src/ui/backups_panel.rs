@@ -21,7 +21,7 @@ impl App {
                 self.error = Some(format!("{error:#}"));
             }
         });
-        ui.label(RichText::new("Close BlueStacks for host restores. Start the original instance for Android restores. Root recovery returns Android data to its saved point in time.").color(MUTED));
+        ui.label(RichText::new("Host restores stop BlueStacks automatically. Start the original instance for Android restores. Root recovery returns Android data to its saved point in time.").color(MUTED));
         let mut restore = None;
         let mut delete = None;
         for backup in &self.backups {

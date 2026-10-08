@@ -23,6 +23,10 @@ impl Config {
     }
 
     pub fn parse(text: String) -> Result<Self> {
+        ensure!(
+            !text.contains('\0') && !text.starts_with("\u{feff}\u{feff}"),
+            "Malformed configuration encoding; no values were read"
+        );
         let mut values = BTreeMap::new();
         let mut offset = 0;
         for raw in text.split_inclusive('\n') {
@@ -85,7 +89,8 @@ impl Config {
         for edit in edits {
             ensure!(seen.insert(&edit.key), "Duplicate edit: {}", edit.key);
             ensure!(
-                !edit.after.contains(['\n', '\r', '"']),
+                !edit.after.contains(['\n', '\r', '"', '\0'])
+                    && !edit.before.contains(['\n', '\r', '"', '\0']),
                 "Invalid config value"
             );
             let Some((value, range)) = self.values.get(&edit.key) else {
@@ -121,6 +126,29 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restore_rejects_injected_recovery_values() {
+        let config = Config::parse("a=0\nuntouched=1\n".into()).unwrap();
+        for before in ["1\nuntouched=0", "1\rnew=1", "\"1\""] {
+            assert!(
+                config
+                    .edit(
+                        &[Edit {
+                            key: "a".into(),
+                            before: before.into(),
+                            after: "0".into()
+                        }],
+                        true
+                    )
+                    .is_err()
+            );
+        }
+    }
+    #[test]
+    fn nul_and_duplicate_bom_are_rejected_before_editing() {
+        assert!(Config::parse("a=1\0b=2\n".into()).is_err());
+        assert!(Config::parse("\u{feff}\u{feff}a=1\n".into()).is_err());
+    }
     #[test]
     fn preserves_bytes_and_only_selected_instance() {
         let c = Config::parse(
