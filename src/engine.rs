@@ -29,6 +29,8 @@ pub struct HostOptions {
     pub high_fps: bool,
     pub hosts: bool,
     pub patch: bool,
+    #[serde(default)]
+    pub keep_features: bool,
     pub enable_adb: bool,
     pub remove_x: bool,
     pub remove_services: bool,
@@ -46,6 +48,7 @@ impl Default for HostOptions {
             high_fps: false,
             hosts: false,
             patch: false,
+            keep_features: false,
             enable_adb: false,
             remove_x: false,
             remove_services: false,
@@ -62,6 +65,7 @@ impl HostOptions {
             gpu: true,
             high_fps: true,
             hosts: true,
+            keep_features: true,
             enable_adb: true,
             ..Self::default()
         }
@@ -146,6 +150,7 @@ pub fn host_plan(snapshot: &Snapshot, instance: &str, options: &HostOptions) -> 
         notes.push("High-frame-rate mode raises the limit to 240 FPS and disables emulator VSync. Actual FPS depends on the game, display and GPU; power use can increase. CPU cores and RAM are not changed by this option.".into());
     }
     let mut operations = Vec::new();
+    let feature_flags_changed = changes.keys().any(|key| key.starts_with("bst.feature."));
     let edits: Vec<_> = changes.into_values().collect();
     if !edits.is_empty() {
         let after = config.edit(&edits, false)?;
@@ -186,19 +191,34 @@ pub fn host_plan(snapshot: &Snapshot, instance: &str, options: &HostOptions) -> 
         }
         notes.push("Hosts filtering is optional and system-wide. It does not guarantee filtering inside Android, or cover encrypted DNS, hard-coded IPs or every ad provider. Rewarded in-game ads can stop working.".into());
     }
-    if options.patch {
+    if options.patch || options.keep_features {
         let path = install.player();
         let before = fs::read(&path)?;
-        let (after, report) = patch::patched(&before)?;
-        notes.push(format!("Integrity patch: {} candidate site(s), {} already patched. Changes affect all instances using this player and invalidate its Authenticode signature.",report.offsets.len(),report.already_patched));
+        let mut after = before.clone();
+        let mut patches = Vec::new();
+        if options.patch {
+            let (updated, report) = patch::patched(&after)?;
+            after = updated;
+            patches.push("system-disk integrity checks");
+            notes.push(format!("Integrity patch: {} candidate site(s), {} already patched. Changes affect all instances using this player and invalidate its Authenticode signature.",report.offsets.len(),report.already_patched));
+        }
+        if options.keep_features {
+            let (updated, _) = patch::persistent_features(&after)?;
+            after = updated;
+            patches.push("keep selected feature flags after restart");
+            notes.push("Feature persistence blocks BlueStacks' remote configuration refresh. It affects all instances and changes the player signature. Restore its recovery copy to re-enable that refresh; a BlueStacks update can replace the patch. Windows and Android configuration remain writable.".into());
+        }
         if before != after {
             operations.push(Operation {
-                label: format!("Apply disk-integrity patch at {:?}", report.offsets),
+                label: format!("Patch player: {}", patches.join("; ")),
                 target: Target::File { path },
                 before: Value::Bytes(before),
                 after: Value::Bytes(after),
             });
         }
+    }
+    if !options.keep_features && feature_flags_changed {
+        notes.push("BlueStacks can reset feature flags when it starts. Enable 'Keep these choices after restart' (included in Maximum) to preserve them using a reversible player patch.".into());
     }
     if options.remove_x || options.remove_services {
         crate::cloud::add_removal(
@@ -209,7 +229,7 @@ pub fn host_plan(snapshot: &Snapshot, instance: &str, options: &HostOptions) -> 
             &mut notes,
         )?;
     }
-    notes.push("Host-wide settings affect all instances. Instance settings affect only the selected instance. Close BlueStacks before applying; the preview itself does not stop processes or change settings.".into());
+    notes.push("Host-wide settings affect all instances. Instance settings affect only the selected instance. Apply automatically closes BlueStacks and its companions, then verifies shutdown before making changes. Review does not stop anything.".into());
     Ok(Plan {
         installation: install.clone(),
         guest: None,
@@ -357,6 +377,7 @@ mod tests {
         options.hosts = false;
         options.remove_x = false;
         options.remove_services = false;
+        options.keep_features = false;
         let plan = host_plan(&snapshot, "Pie64", &options).unwrap();
         let Value::Bytes(after) = &plan.operations[0].after else {
             panic!()

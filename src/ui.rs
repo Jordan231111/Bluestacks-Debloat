@@ -454,7 +454,7 @@ impl App {
                 (
                     "03",
                     "Apply, then start BlueStacks",
-                    "Host changes need BlueStacks closed. Android changes need it running.",
+                    "Host changes close BlueStacks automatically. Android changes need it running.",
                 ),
             ] {
                 ui.horizontal_wrapped(|ui| {
@@ -471,7 +471,7 @@ impl App {
                 if ui.button("Choose debloat options").clicked() { self.tab = Tab::Host; self.plan = None;
                                     self.applied = None; }
                 if ui.button("Start selected instance").clicked() { let install = s.installation.clone(); let name = self.instance.clone(); self.job(ctx, "Starting BlueStacks…", move |_| { discovery::launch(&install, &name)?; Ok(Reply::Done("BlueStacks is starting. Wait for the Android home screen before scanning apps.".into())) }); }
-                if ui.button("Request normal close").clicked() { let install = s.installation.clone(); self.job(ctx, "Requesting BlueStacks to close…", move |_| { let pids = discovery::processes(&install)?.into_iter().filter(|p| p.name.eq_ignore_ascii_case("HD-Player.exe") && p.instance.is_some()).map(|p| p.pid).collect::<Vec<_>>(); platform::close_windows(&pids); Ok(Reply::Done("Close requested. Complete BlueStacks' exit dialog and close the Multi-instance Manager.".into())) }); }
+                if ui.button("Stop BlueStacks").clicked() { let install = s.installation.clone(); self.job(ctx, "Stopping BlueStacks and its companions…", move |tx| { rooting::stop_players(&install, &mut |line| { let _ = tx.send(Event::Log(line)); })?; Ok(Reply::Done("BlueStacks and its companions are stopped.".into())) }); }
             });
             ui.add_space(18.0);
             egui::CollapsingHeader::new("Installation details").show(ui, |ui| {

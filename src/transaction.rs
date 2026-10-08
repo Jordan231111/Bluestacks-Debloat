@@ -1,7 +1,7 @@
 use crate::{
     adb::{Client, Guest},
     config::{Config, Edit},
-    discovery::{self, Installation},
+    discovery::Installation,
     platform,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -232,7 +232,7 @@ impl Backend {
                 fs::create_dir_all(to.parent().context("Missing destination parent")?)?;
                 fs::rename(from, to).with_context(|| {
                     format!(
-                        "Move {} to {}; close the cloud app if its files are in use",
+                        "Move {} to {}; a file is still in use after automatic shutdown",
                         from.display(),
                         to.display()
                     )
@@ -468,7 +468,15 @@ pub fn apply(plan: Plan, root: &Path, mut log: impl FnMut(String)) -> Result<Pat
     let _lock = platform::lock(root)?;
     if plan.guest.is_none() {
         platform::require_admin()?;
-        discovery::require_stopped(&plan.installation)?;
+        let cloud_paths = plan
+            .operations
+            .iter()
+            .filter_map(|op| match &op.target {
+                Target::Directory { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        crate::shutdown::stop_with_cloud(&plan.installation, &cloud_paths, &mut log)?;
     }
     let backend = Backend::new(plan.guest.as_ref())?;
     let id = format!(
@@ -490,6 +498,15 @@ pub fn apply(plan: Plan, root: &Path, mut log: impl FnMut(String)) -> Result<Pat
     };
     // Prepare every backup before the first mutation. Stale previews fail here.
     for (i, mut op) in plan.operations.into_iter().enumerate() {
+        // Running cloud apps can update logs/databases during review. Snapshot the
+        // current directory only after automatic shutdown and before the first write.
+        if let Target::Directory {
+            path, fingerprint, ..
+        } = &mut op.target
+            && fingerprint.is_empty()
+        {
+            *fingerprint = tree_hash(path)?;
+        }
         let current = backend.read(&op.target)?;
         if let Target::Config { edits, .. } = &op.target {
             let Value::Bytes(ref bytes) = current else {
@@ -662,7 +679,15 @@ pub fn restore(dir: &Path, root: &Path, mut log: impl FnMut(String)) -> Result<(
     crate::backup_cleanup::verify_locked(root, dir)?;
     if journal.guest.is_none() {
         platform::require_admin()?;
-        discovery::require_stopped(&journal.installation)?;
+        let cloud_paths = journal
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.target {
+                Target::Directory { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        crate::shutdown::stop_with_cloud(&journal.installation, &cloud_paths, &mut log)?;
     }
     let backend = Backend::new(journal.guest.as_ref())?;
     restore_entries(dir, &mut journal, &backend, &mut log)
@@ -694,6 +719,149 @@ mod tests {
         platform::atomic_write(&p, b"first").unwrap();
         platform::atomic_write(&p, b"second").unwrap();
         assert_eq!(fs::read(p).unwrap(), b"second");
+    }
+    #[test]
+    fn atomic_replacement_preserves_readonly_system_hidden_attributes_and_streams() {
+        use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, GetFileSecurityW};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_READONLY,
+            FILE_ATTRIBUTE_SYSTEM, SetFileAttributesW,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("hosts");
+        fs::write(&path, b"original").unwrap();
+        let stream = PathBuf::from(format!("{}:owned-test-stream", path.display()));
+        fs::write(&stream, b"preserve alternate stream").unwrap();
+        let read_acl = || {
+            let mut needed = 0;
+            unsafe {
+                GetFileSecurityW(
+                    platform::wide(&path).as_ptr(),
+                    DACL_SECURITY_INFORMATION,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut needed,
+                );
+            }
+            let mut bytes = vec![0u8; needed as usize];
+            assert_ne!(
+                unsafe {
+                    GetFileSecurityW(
+                        platform::wide(&path).as_ptr(),
+                        DACL_SECURITY_INFORMATION,
+                        bytes.as_mut_ptr().cast(),
+                        needed,
+                        &mut needed,
+                    )
+                },
+                0
+            );
+            bytes
+        };
+        let original_acl = read_acl();
+        let attributes = FILE_ATTRIBUTE_ARCHIVE
+            | FILE_ATTRIBUTE_READONLY
+            | FILE_ATTRIBUTE_HIDDEN
+            | FILE_ATTRIBUTE_SYSTEM;
+        assert_ne!(
+            unsafe { SetFileAttributesW(platform::wide(&path).as_ptr(), attributes) },
+            0
+        );
+        let result = platform::atomic_write(&path, b"updated");
+        let actual_attributes = fs::metadata(&path).unwrap().file_attributes();
+        // Release the read-only attribute so the disposable test directory can be removed.
+        unsafe {
+            SetFileAttributesW(platform::wide(&path).as_ptr(), FILE_ATTRIBUTE_ARCHIVE);
+        }
+        result.unwrap();
+        assert_eq!(actual_attributes, attributes);
+        assert_eq!(fs::read(&path).unwrap(), b"updated");
+        assert_eq!(fs::read(stream).unwrap(), b"preserve alternate stream");
+        assert_eq!(read_acl(), original_acl);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+    #[test]
+    fn failed_replacement_restores_readonly_attributes_and_original_bytes() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_READONLY,
+            FILE_ATTRIBUTE_SYSTEM, SetFileAttributesW,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("hosts");
+        fs::write(&path, b"original").unwrap();
+        let attributes = FILE_ATTRIBUTE_ARCHIVE
+            | FILE_ATTRIBUTE_READONLY
+            | FILE_ATTRIBUTE_HIDDEN
+            | FILE_ATTRIBUTE_SYSTEM;
+        assert_ne!(
+            unsafe { SetFileAttributesW(platform::wide(&path).as_ptr(), attributes) },
+            0
+        );
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(3)
+            .open(&path)
+            .unwrap();
+        let result = platform::atomic_write(&path, b"updated");
+        let after = fs::metadata(&path).unwrap().file_attributes();
+        drop(held);
+        unsafe {
+            SetFileAttributesW(platform::wide(&path).as_ptr(), FILE_ATTRIBUTE_ARCHIVE);
+        }
+        assert!(result.is_err());
+        assert_eq!(after, attributes);
+        assert_eq!(fs::read(path).unwrap(), b"original");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+    #[test]
+    fn deferred_cloud_snapshot_captures_files_after_review_and_restores_them() {
+        if !platform::is_admin() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cloud");
+        let stash = temp
+            .path()
+            .join(".BlueStacksDebloat-backups")
+            .join(uuid::Uuid::new_v4().to_string())
+            .join("cloud");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("cloud.exe"), b"cloud app").unwrap();
+        let plan = Plan {
+            installation: Installation {
+                install_dir: temp.path().join("install"),
+                data_dir: temp.path().into(),
+                version: "fixture".into(),
+                source: "fixture".into(),
+            },
+            guest: None,
+            title: "Cloud snapshot fixture".into(),
+            notes: vec![],
+            operations: vec![Operation {
+                label: "Remove cloud fixture".into(),
+                target: Target::Directory {
+                    path: path.clone(),
+                    stash: stash.clone(),
+                    fingerprint: String::new(),
+                },
+                before: Value::Present(true),
+                after: Value::Present(false),
+            }],
+        };
+        fs::write(path.join("runtime.log"), b"written after review").unwrap();
+        let backup = apply(plan, temp.path(), |_| {}).unwrap();
+        assert!(!path.exists());
+        assert_eq!(
+            fs::read(stash.join("runtime.log")).unwrap(),
+            b"written after review"
+        );
+        restore(&backup, temp.path(), |_| {}).unwrap();
+        assert!(path.join("cloud.exe").exists());
+        assert_eq!(
+            fs::read(path.join("runtime.log")).unwrap(),
+            b"written after review"
+        );
     }
     #[test]
     fn backup_corruption_is_rejected() {

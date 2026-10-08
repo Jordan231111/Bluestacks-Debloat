@@ -2,11 +2,15 @@
 
 ## Normal use
 
-Double-click `BluestacksDebloat.exe`. Use Overview to inspect or select custom folders. The program can inspect without administrator privileges; use its administrator restart button for host changes. Android tools need a running instance with local ADB enabled in BlueStacks Settings → Advanced.
+Double-click `BluestacksDebloat.exe` and accept the Windows UAC prompt. Use Overview to inspect or select custom folders. Administrator access is requested automatically when the app opens. Android tools need a running instance with local ADB enabled in BlueStacks Settings → Advanced.
 
-For host changes, close all instances and the Multi-instance Manager. **Request normal close** asks BlueStacks to close; confirm BlueStacks' own exit dialog and allow shutdown to finish. The app refuses host writes while relevant processes remain. It does not forcibly kill running games.
+Applying or restoring host changes automatically stops the selected installation's players, Multi-instance Manager, ADB, BstkSVC and cloud companions. Root operations use the same shutdown routine. The app attempts to sync reachable Android instances, requests normal closure, then terminates remaining verified BlueStacks processes and waits for shutdown before writing. Save progress in running games before applying. Review alone does not stop anything. **Stop BlueStacks** in Overview also runs this automatic shutdown.
+
+Read-only hosts/config files are handled automatically: the app temporarily clears the read-only attribute for replacement, preserves the file's access permissions and other attributes, and restores the original protection afterward. Brief file-sharing conflicts are retried. An actual access or sharing failure is reported and triggers rollback rather than a success message.
 
 Choose options, preview, and apply. Changing options or the selected instance invalidates the old preview. A stale underlying value also stops the operation. Successful operations are read back before being reported as verified.
+
+BlueStacks normally refreshes feature flags from its server during startup. **Keep these choices after restart**, included in Maximum, uses a validated player patch to stop that refresh. It affects all instances; configuration remains writable for normal settings and runtime ports. A recovery copy restores the original player and flags. Basic choices without this option may be reset by BlueStacks.
 
 **Review** and **Apply** stay in the fixed bottom bar on Debloat, BlueStacks X, Android apps, and Network. Review does not apply anything. The bar shows pending changes, no changes needed, or a verified completion message. Checkboxes select the next operation; they are not indicators of the installed state.
 
@@ -36,8 +40,8 @@ Android backups include the exact instance and a hashed Android identity. Start 
 | Instance offline | Start the selected instance and wait for its home screen. |
 | ADB port belongs to another instance | Refresh after boot. Do not assume every configured `5555` belongs to the selected instance. |
 | Root denied / timed out | Grant the normal Magisk shell request in that instance, then retry; basic debloat remains available without root. |
-| Host process still running | Finish the BlueStacks exit dialog and close the Multi-instance Manager; wait for shutdown. |
-| Cloud file in use | Close the X/Services application before previewing/applying removal. |
+| Shutdown cannot be verified | No offline changes start. The error identifies the process/service that Windows could not stop. |
+| Cloud file in use after automatic shutdown | Retry after the reported lock is released; completed changes are rolled back and recovery is retained. |
 | Preview became stale | Refresh and preview again. |
 | Optional patch has no validated signatures | Leave patching unchecked. Do not force offsets from another version. |
 | Launcher search or Store fails | This is an expected effect of launcher network isolation. Use Google Play directly or restore the root-network operation. |

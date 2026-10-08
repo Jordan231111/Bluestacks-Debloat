@@ -23,12 +23,12 @@ The interface adapts to smaller windows and Windows display scaling, with adjust
 
 ## Get started
 
-1. **Open the app** and select your BlueStacks instance. Installation folders are detected automatically.
+1. **Open the app**, accept Windows' administrator prompt, and select your BlueStacks instance. Installation folders are detected automatically.
 2. **Choose your options** in Debloat & tune, or select Maximum debloat.
-3. **Review, then apply using the fixed bottom bar.** Review shows pending changes; Apply makes them and reports a verified result. Close BlueStacks for host changes.
+3. **Review, then apply using the fixed bottom bar.** Apply closes BlueStacks and its companions automatically, saves recovery copies, and verifies the changes.
 4. **Finish Android and Network options** with the selected instance running and ADB enabled in BlueStacks Settings → Advanced. Rooting is a separate action in Root BlueStacks.
 
-Maximum selects options across tabs; apply each stage when prompted. Use **Backups & restore** to undo debloat changes, or the Root tab for disk recovery.
+Maximum selects options across tabs and includes a reversible player patch to keep feature choices after restart; apply each stage when prompted. Use **Backups & restore** to undo debloat changes, or the Root tab for disk recovery.
 
 ## Before you use it
 

@@ -12,5 +12,6 @@ pub mod root_files;
 pub mod rooted;
 pub mod rooting;
 pub mod rules;
+pub mod shutdown;
 pub mod transaction;
 pub mod virtual_disk;

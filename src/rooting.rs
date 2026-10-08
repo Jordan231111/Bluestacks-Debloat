@@ -223,75 +223,7 @@ fn set_conf(info: &RootInfo, root: bool) -> Result<()> {
 }
 
 pub fn stop_players(install: &Installation, log: &mut impl FnMut(String)) -> Result<()> {
-    let initial = discovery::processes(install)?;
-    for p in &initial {
-        if p.name.eq_ignore_ascii_case("HD-Player.exe")
-            && let Some(name) = &p.instance
-            && let Ok(adb) = Client::connect(install, name)
-        {
-            let _ = adb.idempotent_shell("sync");
-        }
-    }
-    let ids = initial
-        .iter()
-        .filter(|p| p.name.eq_ignore_ascii_case("HD-Player.exe"))
-        .map(|p| p.pid)
-        .collect::<Vec<_>>();
-    platform::close_windows(&ids);
-    if !ids.is_empty() {
-        log(
-            "Closing BlueStacks for offline maintenance; your last guest writes have been synced"
-                .into(),
-        );
-        std::thread::sleep(Duration::from_millis(800));
-    }
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let remaining = discovery::processes(install)?
-            .into_iter()
-            .filter(|p| !p.name.eq_ignore_ascii_case("HD-Adb.exe"))
-            .collect::<Vec<_>>();
-        if remaining.is_empty() {
-            return Ok(());
-        }
-        ensure!(
-            Instant::now() < deadline,
-            "BlueStacks did not stop; no offline edits can continue"
-        );
-        let mut sys = sysinfo::System::new();
-        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-        for p in remaining {
-            ensure!(
-                [
-                    "HD-Player.exe",
-                    "HD-MultiInstanceManager.exe",
-                    "BstkSVC.exe",
-                    "BstkVMMgr.exe",
-                    "BlueStacksHelper.exe",
-                    "BlueStacksAppplayerWeb.exe",
-                    "HD-CommonLoader.exe"
-                ]
-                .iter()
-                .any(|n| p.name.eq_ignore_ascii_case(n)),
-                "Close {} before rooting; it may be an installer or another maintenance tool",
-                p.name
-            );
-            ensure!(
-                p.path
-                    .as_ref()
-                    .and_then(|p| p.parent())
-                    .is_some_and(|p| platform::same_path(p, &install.install_dir))
-                    || p.instance.is_some(),
-                "Cannot positively identify a protected player; close it manually"
-            );
-            if let Some(current) = sys.process(sysinfo::Pid::from_u32(p.pid))
-                && current.start_time() == p.start_time
-            {
-                ensure!(current.kill(), "Could not close {}", p.name);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
+    crate::shutdown::stop(install, log)
 }
 pub fn boot(info: &RootInfo, log: &mut impl FnMut(String)) -> Result<Client> {
     if !discovery::processes(&info.installation)?

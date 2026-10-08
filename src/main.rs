@@ -68,6 +68,8 @@ enum Action {
         #[arg(long)]
         patch: bool,
         #[arg(long)]
+        keep_features: bool,
+        #[arg(long)]
         enable_adb: bool,
         #[arg(long, value_enum, default_value = "keep")]
         performance: Performance,
@@ -102,7 +104,7 @@ enum Action {
     Screenshot { output: PathBuf },
     /// Start a specific instance.
     Launch,
-    /// Request a normal close through the player's Windows UI.
+    /// Automatically stop BlueStacks players, ADB, managers and companion services.
     Close,
     /// List available operation backups.
     Backups,
@@ -231,6 +233,7 @@ fn run_cli() -> Result<()> {
             high_fps,
             hosts,
             patch,
+            keep_features,
             enable_adb,
             performance,
         }) => {
@@ -247,6 +250,7 @@ fn run_cli() -> Result<()> {
             o.high_fps |= high_fps;
             o.hosts |= hosts;
             o.patch = patch;
+            o.keep_features |= keep_features;
             o.enable_adb |= enable_adb;
             o.performance = performance;
             let plan = engine::host_plan(&snapshot, selected()?, &o)?;
@@ -298,17 +302,8 @@ fn run_cli() -> Result<()> {
         }
         Some(Action::Launch) => discovery::launch(&install, selected()?)?,
         Some(Action::Close) => {
-            let pids = snapshot
-                .processes
-                .iter()
-                .filter(|p| {
-                    p.name.eq_ignore_ascii_case("HD-Player.exe")
-                        && p.instance.as_deref() == args.instance.as_deref()
-                })
-                .map(|p| p.pid)
-                .collect::<Vec<_>>();
-            platform::close_windows(&pids);
-            println!("Close requested; complete any BlueStacks exit dialog before host changes.");
+            rooting::stop_players(&install, &mut |line| eprintln!("{line}"))?;
+            println!("BlueStacks and its companions are stopped.");
         }
         Some(
             Action::Backups

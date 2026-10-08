@@ -2,9 +2,12 @@
 
 Run `BluestacksDebloat.exe` without arguments for the desktop interface. Run `--help` for all commands. Previews are the default; changes require `--apply` or an explicit restore command.
 
+Use an administrator PowerShell window for CLI commands. Double-clicking the app requests UAC automatically. Host apply/restore and root operations stop BlueStacks automatically; `close` performs the same verified shutdown without applying settings.
+
 ```powershell
 .\BluestacksDebloat.exe scan
 .\BluestacksDebloat.exe --instance Pie64 host --maximum
+.\BluestacksDebloat.exe --instance Pie64 host --keep-features --apply
 .\BluestacksDebloat.exe --instance Pie64 host --remove-x --remove-services --apply
 .\BluestacksDebloat.exe --instance Pie64 packages
 .\BluestacksDebloat.exe --instance Pie64 guest --recommended --animations --apply

@@ -6,13 +6,19 @@ Local validation was performed on Windows 10 IoT Enterprise LTSC x64, BlueStacks
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --all-targets -- -D warnings`
-- `cargo test --locked --all-targets`: **39 tests**.
+- `cargo test --locked --all-targets`: **48 tests**.
 - Optimized Windows x64 build with a static MSVC CRT.
 - `cargo audit` (2026-10-07): zero known Rust dependency vulnerabilities. One maintenance advisory remains for the UI's transitive `ttf-parser` 0.25.1 dependency (RUSTSEC-2026-0192); the app uses bundled fonts. This audit does not cover the separate embedded root helper binaries.
 
 Tests cover config byte preservation and stale previews, instance isolation, preserving CPU/RAM in Maximum, migrating away from legacy Google block entries, backup corruption (including same-length root configuration corruption), conflict-aware restore/retry, recovery despite journal-write failure, malformed/unsupported PE images, exact/idempotent binary edits, embedded payload checksums/extraction, partition bounds and short disk reads, and system-file ownership/mode verification.
 
+Version 1.0.3 adds Windows read-only/hidden/system attribute, DACL and alternate-stream preservation tests; locked-file failure and rollback checks; deferred cloud-snapshot restore; and process ownership/exit-race checks. A native process fixture proves owned BstkSVC/HD-Adb helpers stop while a similarly named process in a sibling folder stays running. The built executable's embedded manifest is checked for `requireAdministrator`.
+
+Feature-persistence tests verify the exact three-byte change, idempotence, composition with the existing integrity patch, and rejection of duplicate endpoints, missing executable references, overlay-only strings and unsupported binaries.
+
 ## Live behavior checked
+
+For 1.0.3, the native UI applied Maximum to Tiramisu64 while the player and BstkSVC were running. It synced Android, stopped both processes, verified shutdown, and applied all 22 pending changes (20 configuration edits, Windows hosts, and feature persistence). The actual hosts file had read-only, hidden and system attributes; its complete attribute value and access-control descriptor matched afterward, unrelated hosts entries remained intact, and CPU/RAM allocations matched for every instance. Tiramisu64 then booted and passed instance-specific Android inspection; a post-boot Maximum review reported zero pending operations. The persistence patch's recovery also restored the original player and flags during a separate controlled check. All three retained recovery points passed their full integrity audit.
 
 The 1.0.1 regression tests cover retention across root/debloat and mixed time zones, protected unfinished records, truncated files, same-length file corruption, valid-JSON journal corruption, interrupted deletion, unexpected files, cloud archive ownership, restore preflight, operation-lock conflicts, and streaming copies with concurrent writers excluded. New journals carry checksums; old 1.0.0 journals remain compatible.
 

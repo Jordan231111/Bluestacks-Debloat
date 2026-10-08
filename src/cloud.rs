@@ -135,25 +135,17 @@ pub fn add_removal(
 ) -> Result<()> {
     let roots = cloud_roots(x, services);
     let id = uuid::Uuid::new_v4().to_string();
-    let mut sys = sysinfo::System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
     for (root, marker) in &roots {
         let root = platform::absolute(root)?;
         ensure!(
-            !platform::same_path(&root, &install.install_dir)
-                && !root.starts_with(&install.data_dir)
-                && !install.data_dir.starts_with(&root)
+            !platform::within_directory(&root, &install.install_dir)
+                && !platform::within_directory(&install.install_dir, &root)
+                && !platform::within_directory(&root, &install.data_dir)
+                && !platform::within_directory(&install.data_dir, &root)
                 && !root.join("HD-Player.exe").exists()
                 && !root.join("bluestacks.conf").exists(),
             "Cloud removal target overlaps emulator files"
         );
-        for p in sys.processes().values() {
-            ensure!(
-                !p.exe().is_some_and(|exe| exe.starts_with(&root)),
-                "Close {} before previewing cloud removal",
-                p.name().to_string_lossy()
-            );
-        }
         ensure!(
             root.join(marker).is_file(),
             "Cloud product marker disappeared"
@@ -175,7 +167,7 @@ pub fn add_removal(
                 root.display()
             ),
             target: Target::Directory {
-                fingerprint: transaction::tree_hash(&root)?,
+                fingerprint: String::new(),
                 path: root,
                 stash,
             },
@@ -218,7 +210,7 @@ pub fn add_removal(
                 path.display()
             ),
             target: Target::Directory {
-                fingerprint: transaction::tree_hash(&path)?,
+                fingerprint: String::new(),
                 path,
                 stash,
             },

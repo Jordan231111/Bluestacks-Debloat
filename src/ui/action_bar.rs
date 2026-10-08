@@ -69,7 +69,7 @@ impl App {
             } else {
                 let hint = if self.plan.as_ref().is_some_and(|p| p.guest.is_none()) {
                     if platform::is_admin() {
-                        "Review only. Close BlueStacks, then click Apply to make these changes."
+                        "Apply automatically closes BlueStacks and its companions before making these changes."
                     } else {
                         "Review only. Restart as administrator to apply host changes."
                     }

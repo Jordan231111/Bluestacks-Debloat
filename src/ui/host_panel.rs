@@ -55,6 +55,11 @@ impl App {
             &mut self.options.remove_services,
             "Remove the cloud Services companion",
         );
+        ui.checkbox(
+            &mut self.options.keep_features,
+            "Keep these choices after restart (player patch)",
+        );
+        ui.label(RichText::new("Stops BlueStacks' online configuration refresh from resetting feature flags. Included in Maximum; reversible from Backups.").small().color(MUTED));
     }
     fn host_tuning(&mut self, ui: &mut egui::Ui) {
         ui.strong("Performance & tools");
@@ -98,7 +103,7 @@ impl App {
         });
         if self.maximum_selected && self.options.performance == Performance::Keep {
             egui::Frame::group(ui.style()).inner_margin(12.0).show(ui,|ui|{
-            ui.strong("Maximum · CPU and RAM kept as they are");ui.label("Selects all reviewed host cleanup, cloud removal, GPU / high-FPS options, optional Android packages, animations and BlueStacks-only network controls. Rooting remains a separate action.");
+            ui.strong("Maximum · CPU and RAM kept as they are");ui.label("Selects reviewed cleanup, cloud removal, GPU / high-FPS options, Android options and BlueStacks-only network controls. Includes a reversible player patch to keep feature choices after restart. Rooting remains separate.");
             ui.label(RichText::new("Apply host changes using the bottom bar, then finish Android apps and Network. Root-only filtering needs Magisk.").color(MUTED));
         });
         }

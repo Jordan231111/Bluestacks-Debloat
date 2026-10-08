@@ -813,6 +813,7 @@ mod tests {
     #[test]
     fn completed_rollback_also_enforces_retention() {
         use crate::transaction::{Operation, Plan, Target, Value as Stored};
+        use std::os::windows::fs::OpenOptionsExt;
         if !platform::is_admin() {
             return;
         } // Host writes require an administrator token.
@@ -834,6 +835,13 @@ mod tests {
         let mut permissions = original_permissions.clone();
         permissions.set_readonly(true);
         fs::set_permissions(&blocked, permissions).unwrap();
+        // Read-only destinations are now supported. Deny delete sharing to
+        // reproduce an actual locked-file failure after the first write.
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(3)
+            .open(&blocked)
+            .unwrap();
         let plan = Plan {
             installation: crate::discovery::Installation {
                 install_dir: temp.path().join("install"),
@@ -864,6 +872,7 @@ mod tests {
             ],
         };
         let result = transaction::apply(plan, temp.path(), |_| {});
+        drop(held);
         fs::set_permissions(&blocked, original_permissions).unwrap();
         assert!(format!("{:#}", result.unwrap_err()).contains("Rollback: complete"));
         assert_eq!(fs::read(source).unwrap(), b"original");

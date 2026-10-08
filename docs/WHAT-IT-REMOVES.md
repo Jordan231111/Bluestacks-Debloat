@@ -30,4 +30,6 @@ Launcher isolation owns only the `BSD_LAUNCHER_V1` iptables/ip6tables chains. It
 
 ## Optional binary patch
 
+**Keep these choices after restart**, included in Maximum, stops the player's remote configuration-refresh request from overwriting selected local feature flags. It requires one exact NUL-terminated endpoint in a mapped PE data section and an executable RIP-relative reference. Only three bytes of that endpoint change, with the original player saved in recovery. This disables that configuration-refresh route for all instances and changes the player's signature; it does not make `bluestacks.conf` read-only or block shared cloud domains. BlueStacks updates may replace the patch. Restore its recovery copy to re-enable remote refresh.
+
 Primary integrity strings plus nearby RIP-relative references identify CALL/TEST/JZ sequences inside the x64 `.text` section. PE bounds, call targets and branch destinations are checked. Only validated two-byte branch sites change. A complete backup is saved before an atomic replacement. There is no unanchored force mode and no broad fallback scan. Updates may require a new implementation; unsupported executables are refused.

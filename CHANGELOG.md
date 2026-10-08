@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.3 — 2026-10-07
+
+- Automatically stop BlueStacks players, managers, ADB and companion services before host changes, restore and rooting.
+- Request Windows administrator access when the app opens.
+- Fix Maximum debloat failing on read-only Windows hosts files; preserve permissions and attributes, and retry brief file locks.
+- Keep Maximum's feature choices across restarts with a reversible, validated player patch that prevents remote configuration refresh.
+- Allow reviewing cloud removal while the cloud app is running; capture its recovery files after automatic shutdown.
+
 ## 1.0.2 — 2026-10-07
 
 - Clear a previous root verification result when rooting, unrooting, restoring, or checking an operation that fails.

@@ -26,7 +26,7 @@ fn u32at(b: &[u8], n: usize) -> Result<u32> {
         b.get(n..n + 4).context("Truncated PE")?.try_into()?,
     ))
 }
-pub fn inspect(b: &[u8]) -> Result<PatchReport> {
+fn sections(b: &[u8]) -> Result<Vec<Section>> {
     ensure!(
         b.len() >= 0x100 && b.starts_with(b"MZ"),
         "Not a PE executable"
@@ -62,6 +62,11 @@ pub fn inspect(b: &[u8]) -> Result<PatchReport> {
             text: &b[s..s + 8] == b".text\0\0\0",
         });
     }
+    Ok(sections)
+}
+
+pub fn inspect(b: &[u8]) -> Result<PatchReport> {
+    let sections = sections(b)?;
     let text: Vec<_> = sections.iter().filter(|s| s.text).collect();
     ensure!(text.len() == 1, "Expected one .text section");
     let text = text[0];
@@ -145,6 +150,65 @@ pub fn patched(b: &[u8]) -> Result<(Vec<u8>, PatchReport)> {
     }
     Ok((out, report))
 }
+
+/// Prevent the optional remote configuration refresh from overwriting selected
+/// local feature flags. The equal-length URL change leaves code/layout intact.
+/// Require one NUL-terminated endpoint in mapped data and a real .text reference.
+pub fn persistent_features(b: &[u8]) -> Result<(Vec<u8>, PatchReport)> {
+    const ORIGINAL: &[u8] = b"/app_player/get_conf_updates\0";
+    const PATCHED: &[u8] = b"/app_player/bsd_conf_updates\0";
+    let sections = sections(b)?;
+    let text = sections.iter().filter(|s| s.text).collect::<Vec<_>>();
+    ensure!(text.len() == 1, "Expected one .text section");
+    let text = text[0];
+    let matches = [ORIGINAL, PATCHED]
+        .into_iter()
+        .flat_map(|needle| {
+            b.windows(needle.len())
+                .enumerate()
+                .filter_map(move |(at, value)| (value == needle).then_some((at, needle == PATCHED)))
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        matches.len() == 1,
+        "This player has no unique supported feature-refresh endpoint; the persistence patch was not applied"
+    );
+    let (offset, already) = matches[0];
+    let data = sections
+        .iter()
+        .find(|s| {
+            !s.text
+                && offset >= s.raw
+                && offset
+                    .checked_add(ORIGINAL.len())
+                    .is_some_and(|end| end <= s.raw + s.size)
+        })
+        .context("Feature endpoint is outside a mapped data section")?;
+    let endpoint_rva = data.rva as i64 + (offset - data.raw) as i64;
+    let referenced = (text.raw..(text.raw + text.size).saturating_sub(6)).any(|at| {
+        matches!(b[at], 0x48 | 0x4c)
+            && b[at + 1] == 0x8d
+            && b[at + 2] & 0xc7 == 0x05
+            && text.rva as i64
+                + (at + 7 - text.raw) as i64
+                + i32::from_le_bytes(b[at + 3..at + 7].try_into().unwrap()) as i64
+                == endpoint_rva
+    });
+    ensure!(
+        referenced,
+        "Feature endpoint has no validated executable reference; refusing to patch"
+    );
+    let mut output = b.to_vec();
+    output[offset..offset + PATCHED.len()].copy_from_slice(PATCHED);
+    Ok((
+        output,
+        PatchReport {
+            offsets: if already { vec![] } else { vec![offset] },
+            already_patched: usize::from(already),
+            sha256: crate::platform::hash(b),
+        },
+    ))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +238,41 @@ mod tests {
         let s = b"Verified the disk integrity!\0";
         b[0x500..0x500 + s.len()].copy_from_slice(s);
         b
+    }
+    fn feature_fixture() -> Vec<u8> {
+        let mut b = fixture();
+        let endpoint = b"/app_player/get_conf_updates\0";
+        b[0x540..0x540 + endpoint.len()].copy_from_slice(endpoint);
+        b[0x320..0x323].copy_from_slice(&[0x48, 0x8d, 0x0d]);
+        b[0x323..0x327].copy_from_slice(&0xf19i32.to_le_bytes());
+        b
+    }
+    #[test]
+    fn feature_patch_is_targeted_idempotent_and_composes_with_integrity_patch() {
+        let before = feature_fixture();
+        let (after, report) = persistent_features(&before).unwrap();
+        assert_eq!(report.offsets, vec![0x540]);
+        assert_eq!(before.iter().zip(&after).filter(|(a, b)| a != b).count(), 3);
+        let (again, report) = persistent_features(&after).unwrap();
+        assert_eq!(again, after);
+        assert_eq!(report.already_patched, 1);
+        let (both, _) = patched(&after).unwrap();
+        assert_eq!(persistent_features(&both).unwrap().0, both);
+        assert_eq!(inspect(&both).unwrap().already_patched, 1);
+    }
+    #[test]
+    fn feature_patch_rejects_ambiguous_unreferenced_and_overlay_matches() {
+        let mut b = feature_fixture();
+        let endpoint = b"/app_player/get_conf_updates\0";
+        b[0x580..0x580 + endpoint.len()].copy_from_slice(endpoint);
+        assert!(persistent_features(&b).is_err());
+        let mut b = feature_fixture();
+        b[0x320] = 0;
+        assert!(persistent_features(&b).is_err());
+        let mut b = fixture();
+        b[0x800..0x800 + endpoint.len()].copy_from_slice(endpoint);
+        assert!(persistent_features(&b).is_err());
+        assert!(persistent_features(b"unsupported").is_err());
     }
     #[test]
     fn patch_changes_only_validated_branch_and_is_idempotent() {
