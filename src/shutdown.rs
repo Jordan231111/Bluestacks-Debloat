@@ -309,6 +309,9 @@ pub fn stop_with_cloud(
                 if let Some(current) = system.process(sysinfo::Pid::from_u32(process.pid))
                     && current.start_time() == process.start_time
                     && current.name().eq_ignore_ascii_case(&process.name)
+                    && current
+                        .exe()
+                        .is_none_or(|path| roots.iter().any(|root| within(path, root)))
                 {
                     log(format!("Stopping {} (PID {})", process.name, process.pid));
                     if !current.kill() {

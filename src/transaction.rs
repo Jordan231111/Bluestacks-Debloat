@@ -756,7 +756,25 @@ mod tests {
                 },
                 0
             );
-            bytes
+            // Newer Windows can append inherited copies of existing ACEs and
+            // mark the descriptor auto-inherited during ReplaceFile. Compare
+            // principals, rights, ACE order and DACL protection, not that encoding.
+            let control = u16::from_le_bytes(bytes[2..4].try_into().unwrap()) & 0x1004;
+            let acl = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
+            assert!(acl >= 20 && acl + 8 <= bytes.len());
+            let count = u16::from_le_bytes(bytes[acl + 4..acl + 6].try_into().unwrap());
+            let mut entries = Vec::new();
+            let mut at = acl + 8;
+            for _ in 0..count {
+                let size = u16::from_le_bytes(bytes[at + 2..at + 4].try_into().unwrap()) as usize;
+                let mut entry = bytes[at..at + size].to_vec();
+                entry[1] &= !0x10; // INHERITED_ACE does not change a file ACE's rights.
+                if !entries.contains(&entry) {
+                    entries.push(entry);
+                }
+                at += size;
+            }
+            (control, entries)
         };
         let original_acl = read_acl();
         let attributes = FILE_ATTRIBUTE_ARCHIVE

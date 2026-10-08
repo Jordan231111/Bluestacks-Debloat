@@ -59,7 +59,12 @@ pub fn within_directory(path: &Path, root: &Path) -> bool {
             .trim_end_matches('\\')
             .to_ascii_lowercase()
     };
-    let (path, root) = (normalize(path), normalize(root));
+    // QueryFullProcessImageName can return an 8.3 spelling (for example
+    // RUNNER~1), while registry/discovery paths use the long spelling.
+    // Canonicalize existing paths so ownership is based on the actual object.
+    let path = absolute(path).unwrap_or_else(|_| path.to_owned());
+    let root = absolute(root).unwrap_or_else(|_| root.to_owned());
+    let (path, root) = (normalize(&path), normalize(&root));
     path == root || path.starts_with(&(root + "\\"))
 }
 
