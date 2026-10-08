@@ -61,8 +61,9 @@ fn roots(install: &Installation, cloud_paths: &[PathBuf]) -> Vec<PathBuf> {
             roots.push(path);
         }
     }
+    let installation_root = roots[0].clone();
     roots.retain(|path| {
-        platform::same_path(path, &install.install_dir)
+        platform::same_path(path, &installation_root)
             || (!within(&install.install_dir, path)
                 && !within(path, &install.install_dir)
                 && !within(&install.data_dir, path)
@@ -359,6 +360,23 @@ pub fn stop_with_cloud(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scope_keeps_the_installation_when_windows_path_spelling_differs() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("install");
+        std::fs::create_dir(&path).unwrap();
+        let install = Installation {
+            install_dir: PathBuf::from(path.to_string_lossy().replace('\\', "/")),
+            data_dir: temp.path().join("data"),
+            version: "fixture".into(),
+            source: "fixture".into(),
+        };
+        let scope = roots(&install, &[]);
+        assert!(
+            scope.iter().any(|root| within(&path, root)),
+            "The canonical installation root was incorrectly removed: {scope:?}"
+        );
+    }
     #[test]
     fn ownership_requires_path_boundary_and_excludes_this_app() {
         let roots = vec![PathBuf::from(r"C:\Program Files\BlueStacks_nxt")];
