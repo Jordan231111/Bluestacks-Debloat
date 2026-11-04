@@ -1,5 +1,6 @@
 use crate::{config::Config, platform};
 use anyhow::{Context, Result, ensure};
+use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -216,18 +217,45 @@ pub fn log_tail(install: &Installation) -> Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 pub fn processes(install: &Installation) -> Result<Vec<Process>> {
-    let mut sys = System::new();
+    let mut sys = System::new()?;
     sys.refresh_processes(ProcessesToUpdate::All, true);
     // The player protects its executable path/command line on recent builds. Correlate
     // timestamped instance logs with process birth time, so recycled PIDs cannot match.
     let re = regex::Regex::new(r"(?m)^(\S+\s+\S+)\s+(\d+)\s+\d+\s+\S+\s+([A-Za-z0-9_]+)\s+\[")?;
     let mut logged = BTreeMap::new();
     for c in re.captures_iter(&log_tail(install).unwrap_or_default()) {
-        if let (Ok(pid), Ok(time)) = (
+        if let (Ok(pid), Some(time)) = (
             c[2].parse::<u32>(),
-            chrono::DateTime::parse_from_str(&c[1], "%Y-%m-%d %H:%M:%S%.f%z"),
+            player_log_timestamp(&c[1], &chrono::Local),
         ) {
-            logged.insert(pid, (time.timestamp(), c[3].to_owned()));
+            // BlueStacks can keep the old DST offset after Windows changes clocks.
+            // Its wall clock is still local. Normalize that wall time with Windows'
+            // timezone rules instead of trusting the cached suffix in Player.log.
+            logged.insert(pid, (time, c[3].to_owned()));
+        }
+    }
+    // Each VM keeps its own UTC startup header even when the shared Player.log
+    // rotates or a quiet player's lines fall outside its tail.
+    if let Ok(conf) = Config::read(&install.conf()) {
+        for instance in instances(install, &conf) {
+            let path = install
+                .data_dir
+                .join("Engine")
+                .join(&instance.name)
+                .join("Logs/BstkCore.log");
+            let mut bytes = Vec::new();
+            if let Ok(file) = fs::File::open(path)
+                && file.take(16 * 1024).read_to_end(&mut bytes).is_ok()
+                && let Some((pid, time, executable)) =
+                    core_log_identity(&String::from_utf8_lossy(&bytes))
+                && platform::same_path(&executable, &install.player())
+                && let Some(process) = sys.process(sysinfo::Pid::from_u32(pid))
+                && process.name().eq_ignore_ascii_case("HD-Player.exe")
+                && time >= process.start_time() as i64
+                && log_matches_process(time, process.start_time(), chrono::Utc::now().timestamp())
+            {
+                logged.insert(pid, (time, instance.name));
+            }
         }
     }
     let mut out = Vec::new();
@@ -243,10 +271,14 @@ pub fn processes(install: &Installation) -> Result<Vec<Process>> {
             .as_ref()
             .and_then(|p| p.parent())
             .is_some_and(|p| platform::same_path(p, &install.install_dir));
-        let instance = logged
-            .get(&pid.as_u32())
-            .filter(|(time, _)| *time >= p.start_time() as i64 - 2)
-            .map(|(_, n)| n.clone());
+        let instance = command_instance(p.cmd()).filter(|_| exact).or_else(|| {
+            logged
+                .get(&pid.as_u32())
+                .filter(|(time, _)| {
+                    log_matches_process(*time, p.start_time(), chrono::Utc::now().timestamp())
+                })
+                .map(|(_, n)| n.clone())
+        });
         if exact || name.eq_ignore_ascii_case("HD-Player.exe") && instance.is_some() {
             out.push(Process {
                 pid: pid.as_u32(),
@@ -276,7 +308,7 @@ pub fn snapshot(installation: Installation) -> Result<Snapshot> {
     let conf = Config::read(&installation.conf())?;
     let instances = instances(&installation, &conf);
     let processes = processes(&installation)?;
-    let mut sys = System::new();
+    let mut sys = System::new()?;
     sys.refresh_memory();
     Ok(Snapshot {
         installation,
@@ -306,6 +338,9 @@ pub fn require_stopped(install: &Installation) -> Result<()> {
     Ok(())
 }
 pub fn launch(install: &Installation, name: &str) -> Result<()> {
+    launch_owned(install, name).map(|_| ())
+}
+pub(crate) fn launch_owned(install: &Installation, name: &str) -> Result<std::process::Child> {
     use std::os::windows::process::CommandExt;
     ensure!(
         instances(install, &Config::read(&install.conf())?)
@@ -313,12 +348,175 @@ pub fn launch(install: &Installation, name: &str) -> Result<()> {
             .any(|i| i.name == name),
         "Unknown instance"
     );
-    std::process::Command::new(install.player())
+    Ok(std::process::Command::new(install.player())
         .args(["--instance", name])
         .creation_flags(0x00000208) // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()?;
-    Ok(())
+        .spawn()?)
+}
+
+fn command_instance(args: &[std::ffi::OsString]) -> Option<String> {
+    args.windows(2).find_map(|pair| {
+        let name = pair[1].to_str()?;
+        (pair[0] == "--instance" && valid_instance(name)).then(|| name.to_owned())
+    })
+}
+
+fn log_matches_process(time: i64, birth: u64, now: i64) -> bool {
+    birth > 0 && time >= (birth as i64).saturating_sub(2) && time <= now.saturating_add(2)
+}
+
+fn player_log_timestamp(text: &str, timezone: &impl TimeZone) -> Option<i64> {
+    let time = chrono::DateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f%z").ok()?;
+    timezone
+        .from_local_datetime(&time.naive_local())
+        .single()
+        .map(|t| t.timestamp())
+}
+
+fn core_log_identity(text: &str) -> Option<(u32, i64, PathBuf)> {
+    let values = text
+        .lines()
+        .filter_map(|line| {
+            let (elapsed, value) = line.split_once(char::is_whitespace)?;
+            elapsed
+                .bytes()
+                .all(|b| b.is_ascii_digit() || matches!(b, b':' | b'.'))
+                .then_some(value.trim())
+        })
+        .collect::<Vec<_>>();
+    let find = |prefix: &str| values.iter().find_map(|line| line.strip_prefix(prefix));
+    Some((
+        find("Process ID: ")?.parse().ok()?,
+        chrono::DateTime::parse_from_rfc3339(find("Log opened ")?)
+            .ok()?
+            .timestamp(),
+        PathBuf::from(find("Executable: ")?),
+    ))
+}
+
+pub(crate) fn guest_powered_off(
+    install: &Installation,
+    instance: &str,
+    pid: u32,
+    birth: u64,
+) -> bool {
+    let check = || -> Result<bool> {
+        let mut file = fs::File::open(
+            install
+                .data_dir
+                .join("Engine")
+                .join(instance)
+                .join("Logs/BstkCore.log"),
+        )?;
+        let mut head = Vec::new();
+        (&mut file).take(16 * 1024).read_to_end(&mut head)?;
+        let Some((recorded_pid, time, executable)) =
+            core_log_identity(&String::from_utf8_lossy(&head))
+        else {
+            return Ok(false);
+        };
+        if recorded_pid != pid
+            || time < birth as i64
+            || !log_matches_process(time, birth, chrono::Utc::now().timestamp())
+            || !platform::same_path(&executable, &install.player())
+        {
+            return Ok(false);
+        }
+        let len = file.metadata()?.len();
+        file.seek(SeekFrom::Start(len.saturating_sub(16 * 1024)))?;
+        let mut tail = String::new();
+        file.take(16 * 1024).read_to_string(&mut tail)?;
+        Ok(tail
+            .lines()
+            .any(|l| l.ends_with("Console: Machine state changed to 'PoweredOff'")))
+    };
+    check().unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn shutdown_evidence_requires_the_current_vm_process_and_a_powered_off_state() {
+        let t = tempfile::tempdir().unwrap();
+        let install = Installation {
+            install_dir: t.path().into(),
+            data_dir: t.path().into(),
+            version: "fixture".into(),
+            source: "fixture".into(),
+        };
+        fs::write(install.player(), []).unwrap();
+        let logs = t.path().join("Engine/Pie64/Logs");
+        fs::create_dir_all(&logs).unwrap();
+        let time = chrono::Utc::now().timestamp() - 5;
+        let header = format!(
+            "00:00:00.000 Log opened {}\n00:00:00.001 Process ID: 1234\n00:00:00.002 Executable: {}\n",
+            chrono::DateTime::from_timestamp(time, 0)
+                .unwrap()
+                .to_rfc3339(),
+            install.player().display()
+        );
+        let path = logs.join("BstkCore.log");
+        fs::write(&path, &header).unwrap();
+        assert!(!guest_powered_off(&install, "Pie64", 1234, time as u64));
+        fs::write(
+            &path,
+            format!("{header}00:00:20.000 Console: Machine state changed to 'PoweredOff'\n"),
+        )
+        .unwrap();
+        assert!(guest_powered_off(&install, "Pie64", 1234, time as u64));
+        assert!(!guest_powered_off(&install, "Pie64", 9999, time as u64));
+        assert!(!guest_powered_off(
+            &install,
+            "Pie64",
+            1234,
+            (time + 4) as u64
+        ));
+    }
+    #[test]
+    fn per_instance_startup_header_retains_identity_after_shared_log_rotation() {
+        let header = "00:00:00.366367 Log opened 2026-11-04T02:59:10.815407500Z\n00:00:00.373476 Executable: C:\\Program Files\\BlueStacks_nxt\\HD-Player.exe\n00:00:00.373476 Process ID: 7768\n";
+        let (pid, time, executable) = core_log_identity(header).unwrap();
+        assert_eq!(pid, 7768);
+        assert_eq!(
+            executable,
+            PathBuf::from(r"C:\Program Files\BlueStacks_nxt\HD-Player.exe")
+        );
+        assert!(log_matches_process(time, 1793761149, 1793764000));
+        assert!(!log_matches_process(time, 1793762000, 1793764000));
+        assert!(core_log_identity("Process ID: 7768").is_none());
+    }
+    #[test]
+    fn player_log_uses_windows_wall_time_when_bluestacks_caches_the_old_dst_offset() {
+        let standard = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+        let stale = player_log_timestamp("2026-11-03 21:59:09.527-0400", &standard).unwrap();
+        let correct = player_log_timestamp("2026-11-03 21:59:09.527-0500", &standard).unwrap();
+        assert_eq!(stale, correct);
+        assert!(log_matches_process(stale, 1793761149, 1793761200));
+        let old_pid = player_log_timestamp("2026-11-03 21:58:00.000-0400", &standard).unwrap();
+        assert!(!log_matches_process(old_pid, 1793761149, 1793761200));
+    }
+    #[test]
+    fn stale_pids_and_future_log_entries_do_not_identify_a_player() {
+        assert!(log_matches_process(102, 100, 105));
+        assert!(!log_matches_process(97, 100, 105));
+        assert!(!log_matches_process(110, 100, 105));
+        assert!(!log_matches_process(102, 0, 105));
+    }
+    #[test]
+    fn command_line_requires_an_explicit_valid_instance() {
+        let args = |v: &[&str]| v.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        assert_eq!(
+            command_instance(&args(&["HD-Player.exe", "--instance", "Pie64_1"])),
+            Some("Pie64_1".into())
+        );
+        assert_eq!(
+            command_instance(&args(&["HD-Player.exe", "--instance", "../Pie64"])),
+            None
+        );
+        assert_eq!(command_instance(&args(&["HD-Player.exe", "Pie64"])), None);
+    }
 }

@@ -5,7 +5,7 @@ impl App {
         Self::heading(
             ui,
             "Backups & restore",
-            "Automatically keeps the newest 3 verified recovery points across debloat and root.",
+            "Keeps the newest 3 verified recovery actions. A batch keeps every instance's recovery copy together.",
         );
         ui.label("Older recovery points are permanently removed. Unfinished or damaged recoveries stay visible for inspection.");
         ui.horizontal_wrapped(|ui| {
@@ -27,6 +27,7 @@ impl App {
         for backup in &self.backups {
             egui::Frame::group(ui.style()).inner_margin(12.0).show(ui, |ui| {
                 ui.strong(&backup.title);
+                if backup.batch_id.is_some() { ui.label(RichText::new("Batch recovery · automatic cleanup keeps this batch together").small().color(ACCENT)); }
                 ui.label(RichText::new(format!("{} · {:?} · {}", backup.created, backup.kind, backup.status)).small().color(MUTED));
                 if let Some(problem) = &backup.problem {
                     ui.label(RichText::new("Recovery needs attention").color(Color32::from_rgb(255, 169, 157)));

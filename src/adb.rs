@@ -10,6 +10,7 @@ use std::{
     os::windows::{fs::OpenOptionsExt, process::CommandExt},
     path::Path,
     process::{Child, Command, Stdio},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -26,12 +27,44 @@ pub struct Package {
     pub reason: String,
     pub recommended: bool,
 }
+const REVIEWED_PACKAGES: &[(&str, &str, bool)] = &[
+    (
+        "gg.now.ads.service",
+        "BlueStacks ad presentation service",
+        true,
+    ),
+    ("com.uncube.gamevantage", "BlueStacks gameplay ads", true),
+    (
+        "com.bluestacks.appmart",
+        "Legacy BlueStacks App Center",
+        true,
+    ),
+    (
+        "com.bluestacks.appfinder",
+        "Legacy app recommendations",
+        true,
+    ),
+    ("com.android.egg", "Android Easter egg", false),
+    (
+        "com.android.printspooler",
+        "Android print support (printing stops working)",
+        false,
+    ),
+    ("com.android.traceur", "Android system tracing UI", false),
+];
+pub(crate) fn reviewed_package(name: &str) -> bool {
+    REVIEWED_PACKAGES
+        .iter()
+        .any(|(candidate, _, _)| *candidate == name)
+}
 pub struct Client {
     install: Installation,
     port: u16,
     serial: String,
+    player_pid: u32,
+    player_birth: u64,
     pub guest: Guest,
-    server: Child,
+    server: Mutex<Child>,
     _port_lock: File,
 }
 pub fn quote(s: &str) -> String {
@@ -42,13 +75,136 @@ pub fn valid_package(s: &str) -> bool {
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
 }
+fn transport_failure(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    [
+        "protocol fault",
+        "connection reset",
+        "broken pipe",
+        "no completion status",
+        "device offline",
+        "not found",
+        "error: closed",
+        "timed out",
+        "private adb server exited",
+        "cannot connect",
+        "failed to connect",
+    ]
+    .iter()
+    .any(|part| message.contains(part))
+}
 
 impl Client {
+    /// Persist delayed framework writes before closing a queued player. Nougat
+    /// blocks framework power commands, so allow its writeback window then sync.
+    pub fn prepare_close(&self) -> Result<()> {
+        self.verify_identity()?;
+        let sdk = self.idempotent_shell("getprop ro.build.version.sdk")?;
+        if sdk.trim().parse::<u32>().is_ok_and(|v| v <= 25) {
+            return self.settle_pending_writes();
+        }
+        self.idempotent_shell("sync")?;
+        // Nougat's legacy adbd can fail the PTY shell service. Losing the
+        // non-PTY completion marker during shutdown is expected; require
+        // positive VM/transport evidence below before accepting it.
+        let result = self.shell("svc power shutdown");
+        if result.as_ref().is_err_and(|e| {
+            let text = format!("{e:#}");
+            text.contains("(137)")
+                || text.contains("SecurityException")
+                || text.contains("Permission Denial")
+        }) {
+            return self.settle_pending_writes();
+        }
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if discovery::guest_powered_off(
+                &self.install,
+                &self.guest.instance,
+                self.player_pid,
+                self.player_birth,
+            ) {
+                return Ok(());
+            }
+            ensure!(
+                self.owns_server(),
+                "Private ADB server exited before guest shutdown was confirmed"
+            );
+            match self.raw(&["get-state"], true) {
+                Ok(state)
+                    if matches!(
+                        String::from_utf8_lossy(&state).trim(),
+                        "offline" | "unknown"
+                    ) =>
+                {
+                    return Ok(());
+                }
+                Err(error) => {
+                    let message = format!("{error:#}").to_ascii_lowercase();
+                    if ["device offline", "not found", "no devices", "error: closed"]
+                        .iter()
+                        .any(|s| message.contains(s))
+                    {
+                        return Ok(());
+                    }
+                }
+                _ => {}
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "Android did not confirm shutdown; queued player cleanup needs attention: {}",
+                result
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or_else(|e| format!("{e:#}"))
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+    fn settle_pending_writes(&self) -> Result<()> {
+        // PackageManager batches restriction writes for 10 seconds; SettingsProvider
+        // can defer writes for 2 seconds. Keep the guest alive beyond both windows.
+        self.idempotent_shell("sleep 12; sync")?;
+        self.verify_identity()
+    }
     pub fn reconnect_transport(&self) -> Result<()> {
-        ensure!(self.owns_server(), "Private ADB server exited");
+        let device_port = self
+            .serial
+            .rsplit_once(':')
+            .context("Invalid ADB serial")?
+            .1
+            .parse::<u16>()?;
+        let listeners = network::connections()?
+            .into_iter()
+            .filter(|r| r.local_port == device_port && r.state == 2)
+            .collect::<Vec<_>>();
+        ensure!(
+            !listeners.is_empty()
+                && listeners.iter().all(|r| r.pid == self.player_pid)
+                && discovery::processes(&self.install)?
+                    .iter()
+                    .any(|p| p.pid == self.player_pid
+                        && p.start_time == self.player_birth
+                        && p.instance.as_deref() == Some(&self.guest.instance)),
+            "ADB listener ownership changed; refusing to reconnect to another player"
+        );
+        if !self.owns_server() {
+            self.restart_server()?;
+        }
         let _ = self.raw(&["disconnect", &self.serial], false);
-        self.raw(&["connect", &self.serial], false)?;
-        Ok(())
+        for attempt in 0..4 {
+            match self.raw(&["connect", &self.serial], false) {
+                Ok(_) => return Ok(()),
+                Err(error) if attempt < 3 && transport_failure(&error) => {
+                    self.restart_server().with_context(|| {
+                        format!("Recover private ADB server after connection failure: {error:#}")
+                    })?;
+                    std::thread::sleep(Duration::from_millis(150 * (attempt + 1)));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!()
     }
     /// Only callers with an idempotent command should opt into transport retries.
     pub fn idempotent_shell(&self, cmd: &str) -> Result<String> {
@@ -57,20 +213,7 @@ impl Client {
             match self.shell(cmd) {
                 Ok(s) => return Ok(s),
                 Err(e) => {
-                    let message = format!("{e:#}").to_ascii_lowercase();
-                    if ![
-                        "protocol fault",
-                        "connection reset",
-                        "broken pipe",
-                        "no completion status",
-                        "device offline",
-                        "not found",
-                        "error: closed",
-                        "timed out",
-                    ]
-                    .iter()
-                    .any(|s| message.contains(s))
-                    {
+                    if !transport_failure(&e) {
                         return Err(e);
                     }
                     last = Some(e);
@@ -145,7 +288,7 @@ impl Client {
         self.shell(&format!("su -c {}", quote(script)))
     }
     pub fn verify_identity(&self) -> Result<()> {
-        let identity = self.shell("settings get secure android_id")?;
+        let identity = self.idempotent_shell("settings get secure android_id")?;
         ensure!(
             platform::hash(identity.trim().as_bytes()) == self.guest.identity,
             "Android identity changed during the operation"
@@ -153,6 +296,21 @@ impl Client {
         Ok(())
     }
     pub fn connect(install: &Installation, name: &str) -> Result<Self> {
+        // Legacy HD-Adb can leave a just-started private daemon with a broken
+        // status channel. A constructor failure drops only that owned daemon;
+        // retry the read-only connection with a fresh child, never a global server.
+        for attempt in 0..3 {
+            match Self::connect_once(install, name) {
+                Ok(client) => return Ok(client),
+                Err(error) if attempt < 2 && transport_failure(&error) => {
+                    std::thread::sleep(Duration::from_millis(300 * (attempt + 1)));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!()
+    }
+    fn connect_once(install: &Installation, name: &str) -> Result<Self> {
         let conf = crate::config::Config::read(&install.conf())?;
         let instance = discovery::instances(install, &conf)
             .into_iter()
@@ -182,6 +340,12 @@ impl Client {
                     && p.instance.as_deref() == Some(name))),
             "ADB port {device_port} belongs to another or unverified instance; refresh after the chosen instance finishes booting"
         );
+        let player_pid = owners[0].pid;
+        let player_birth = processes
+            .iter()
+            .find(|p| p.pid == player_pid)
+            .context("ADB player disappeared")?
+            .start_time;
         let locks = platform::state_dir().join("adb-locks");
         std::fs::create_dir_all(&locks)?;
         let (port, port_lock) = (15037..=15057)
@@ -200,14 +364,7 @@ impl Client {
             .context("No free private ADB server port (15037–15057)")?;
         // Own the foreground server process handle, rather than borrowing a daemon
         // that a concurrent tool might also use. Drop can only terminate this child.
-        let server = Command::new(install.adb())
-            .args(["-P", &port.to_string(), "nodaemon", "server"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(0x08000000)
-            .spawn()
-            .context("Start private ADB server")?;
+        let server = spawn_private_server(install, port)?;
         let guest = Guest {
             installation: install.clone(),
             instance: name.into(),
@@ -217,14 +374,21 @@ impl Client {
             install: install.clone(),
             port,
             serial: format!("127.0.0.1:{device_port}"),
+            player_pid,
+            player_birth,
             guest,
-            server,
+            server: Mutex::new(server),
             _port_lock: port_lock,
         };
         let start = Instant::now();
         while !client.owns_server() {
             ensure!(
-                client.server.try_wait()?.is_none(),
+                client
+                    .server
+                    .get_mut()
+                    .map_err(|_| anyhow::anyhow!("Private ADB server lock was poisoned"))?
+                    .try_wait()?
+                    .is_none(),
                 "Private ADB server exited before listening"
             );
             ensure!(
@@ -233,18 +397,23 @@ impl Client {
             );
             std::thread::sleep(Duration::from_millis(50));
         }
-        client.raw(&["connect", &client.serial], false)?;
+        client.reconnect_transport()?;
         ensure!(
-            client.shell("getprop sys.boot_completed")?.trim() == "1",
+            client
+                .idempotent_shell("getprop sys.boot_completed")?
+                .trim()
+                == "1",
             "Android is still booting; try again shortly"
         );
-        let launcher =
-            client.shell("pm path com.uncube.launcher3 || pm path com.bluestacks.launcher")?;
+        // `pm path` can succeed with empty output for a missing package.
+        let launcher = client.idempotent_shell(
+            "pm path com.uncube.launcher3 || true; pm path com.bluestacks.launcher || true",
+        )?;
         ensure!(
             launcher.contains("package:"),
             "Connected Android device does not contain a recognized BlueStacks launcher"
         );
-        let identity = client.shell("settings get secure android_id")?;
+        let identity = client.idempotent_shell("settings get secure android_id")?;
         ensure!(
             !identity.trim().is_empty() && identity.trim() != "null",
             "Cannot identify this Android instance"
@@ -261,6 +430,9 @@ impl Client {
         Ok(client)
     }
     fn owns_server(&self) -> bool {
+        let Ok(server) = self.server.lock() else {
+            return false;
+        };
         let Ok(rows) = network::connections() else {
             return false;
         };
@@ -268,10 +440,49 @@ impl Client {
             .into_iter()
             .filter(|r| r.local_port == self.port && r.state == 2)
             .collect();
-        !owners.is_empty() && owners.iter().all(|r| r.pid == self.server.id())
+        !owners.is_empty() && owners.iter().all(|r| r.pid == server.id())
+    }
+    fn restart_server(&self) -> Result<()> {
+        {
+            let mut server = self
+                .server
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Private ADB server lock was poisoned"))?;
+            let _ = server.kill();
+            server.wait()?;
+            *server = spawn_private_server(&self.install, self.port)?;
+        }
+        let start = Instant::now();
+        while !self.owns_server() {
+            ensure!(
+                self.server
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("Private ADB server lock was poisoned"))?
+                    .try_wait()?
+                    .is_none(),
+                "Private ADB server exited before listening"
+            );
+            ensure!(
+                start.elapsed() < Duration::from_secs(5),
+                "Private ADB server did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        Ok(())
     }
     fn raw(&self, args: &[&str], device: bool) -> Result<Vec<u8>> {
-        let mut cmd = vec!["-P".into(), self.port.to_string()];
+        ensure!(
+            self.owns_server(),
+            "Private ADB server exited before the command"
+        );
+        // A remote host argument prevents adb's implicit daemon auto-start. If
+        // our owned child dies, no untracked replacement may be borrowed.
+        let mut cmd = vec![
+            "-H".into(),
+            "127.0.0.1".into(),
+            "-P".into(),
+            self.port.to_string(),
+        ];
         if device {
             cmd.extend(["-s".into(), self.serial.clone()]);
         }
@@ -320,7 +531,7 @@ impl Client {
     }
     pub fn package_state(&self, name: &str) -> Result<u8> {
         ensure!(valid_package(name), "Invalid package name");
-        let dump = self.shell(&format!("dumpsys package {}", quote(name)))?;
+        let dump = self.idempotent_shell(&format!("dumpsys package {}", quote(name)))?;
         let re = regex::Regex::new(r"User 0: [^\n]*\benabled=(\d+)")?;
         let caps = re
             .captures(&dump)
@@ -348,33 +559,9 @@ impl Client {
         Ok(())
     }
     pub fn candidates(&self) -> Result<Vec<Package>> {
-        let installed = self.shell("pm list packages --user 0")?;
+        let installed = self.idempotent_shell("pm list packages --user 0")?;
         let mut result = Vec::new();
-        for (name, reason, recommended) in [
-            (
-                "gg.now.ads.service",
-                "BlueStacks ad presentation service",
-                true,
-            ),
-            ("com.uncube.gamevantage", "BlueStacks gameplay ads", true),
-            (
-                "com.bluestacks.appmart",
-                "Legacy BlueStacks App Center",
-                true,
-            ),
-            (
-                "com.bluestacks.appfinder",
-                "Legacy app recommendations",
-                true,
-            ),
-            ("com.android.egg", "Android Easter egg", false),
-            (
-                "com.android.printspooler",
-                "Android print support (printing stops working)",
-                false,
-            ),
-            ("com.android.traceur", "Android system tracing UI", false),
-        ] {
+        for &(name, reason, recommended) in REVIEWED_PACKAGES {
             if installed
                 .lines()
                 .any(|l| l.trim() == format!("package:{name}"))
@@ -391,7 +578,7 @@ impl Client {
     }
     pub fn setting(&self, name: &str) -> Result<Option<String>> {
         ensure!(ANIMATIONS.contains(&name), "Unsupported Android setting");
-        let v = self.shell(&format!("settings get global {name}"))?;
+        let v = self.idempotent_shell(&format!("settings get global {name}"))?;
         Ok(if v.trim() == "null" {
             None
         } else {
@@ -427,6 +614,8 @@ impl Drop for Client {
             let _ = platform::run(
                 &self.install.adb(),
                 &[
+                    "-H".into(),
+                    "127.0.0.1".into(),
                     "-P".into(),
                     self.port.to_string(),
                     "disconnect".into(),
@@ -435,9 +624,20 @@ impl Drop for Client {
                 Duration::from_secs(3),
             );
         }
-        let _ = self.server.kill();
-        let _ = self.server.wait();
+        let server = self.server.get_mut().unwrap_or_else(|e| e.into_inner());
+        let _ = server.kill();
+        let _ = server.wait();
     }
+}
+fn spawn_private_server(install: &Installation, port: u16) -> Result<Child> {
+    Command::new(install.adb())
+        .args(["-P", &port.to_string(), "nodaemon", "server"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x08000000)
+        .spawn()
+        .context("Start private ADB server")
 }
 pub const ANIMATIONS: &[&str] = &[
     "window_animation_scale",
@@ -448,6 +648,19 @@ pub const ANIMATIONS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transport_retries_are_limited_to_connection_failures() {
+        assert!(transport_failure(&anyhow::anyhow!(
+            "error: protocol fault (couldn't read status length): No error"
+        )));
+        assert!(transport_failure(&anyhow::anyhow!(
+            "ADB shell returned no completion status"
+        )));
+        assert!(!transport_failure(&anyhow::anyhow!("Permission denied")));
+        assert!(!transport_failure(&anyhow::anyhow!(
+            "Android identity changed"
+        )));
+    }
     #[test]
     fn package_validation_blocks_shell_injection() {
         assert!(!valid_package("a.b; reboot"));

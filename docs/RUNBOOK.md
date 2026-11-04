@@ -20,9 +20,17 @@ BlueStacks normally refreshes feature flags from its server during startup. **Ke
 
 After cloud removal, start the emulator using **Start selected instance**, an existing BlueStacks 5 shortcut, or `HD-Player.exe --instance NAME`. Test launch, your installed games and Google Play. The X/Store executable and the separate Services companion are not needed to invoke the local player directly.
 
+## Debloating several instances
+
+In **Debloat & tune**, check the exact instances to change. **Select all** selects every discovered instance, including stopped ones; **Clear selection** disables Review until you choose an instance. The selection carries over to **Android apps**. CPU/RAM and notification/FPS options apply to each checked instance; shared PC options apply once. Host Apply closes every player in that installation, including unchecked instances.
+
+In **Android apps**, enable local ADB, then use **Start & scan selected instances**. Stopped instances boot one at a time, are scanned, and close afterward. Players that were already running stay open. App rows show how many selected instances have each app enabled; missing apps on another Android version are left alone. Review uses the exact scan snapshot without another boot. Apply verifies each guest identity and current values, then shows a separate result and recovery copy for each instance. An unavailable instance does not block the other ready instances.
+
+**Stop after current instance** completes the active instance and skips the rest of that queue. Recovery-storage failures also stop further queued writes. To retry failures or review new settings after Apply, scan again. Root and advanced Network controls use the separate single-instance picker.
+
 ## Backups
 
-The app automatically keeps the **newest three verified completed recovery points total**, across normal and root operations. This runs on desktop startup and after changes. Before removing older points, it checks the retained recovery files. Unfinished, unrecognized, or damaged recovery records are reported and protected when they need inspection; these can temporarily exceed the three-point limit. There is no retention setting.
+The app automatically keeps the **newest three verified completed recovery actions**, across normal and root operations. All per-instance copies from one Android batch count as one action and remain available together. This runs on desktop startup and after changes. Before removing older points, it checks the retained recovery files. Unfinished, unrecognized, or damaged recovery records are reported and protected when they need inspection; these can temporarily exceed the limit. There is no retention setting.
 
 Use **Delete backup** to permanently remove a completed point and its recorded cloud recovery copies. **Check backup integrity** streams each file through SHA-256 and shows missing, truncated, or corrupt content. All recovery files are checked before an explicit restore changes live files. New journals contain their own checksum; v1.0.0 journals remain readable, but their original metadata did not have that checksum.
 
@@ -43,6 +51,7 @@ Android backups include the exact instance and a hashed Android identity. Start 
 | Missing or ambiguous installation | Set both Program and Data folders in Overview. Program must contain HD-Player/HD-Adb; Data must contain bluestacks.conf. |
 | Instance offline | Start the selected instance and wait for its home screen. |
 | ADB port belongs to another instance | Refresh after boot. Do not assume every configured `5555` belongs to the selected instance. |
+| Configured ADB port is already in use | Stop the instance or application using that port, or clone the instance in Multi-instance Manager to obtain an independent port. Fresh Nougat masters can both default to 5555. The queue refuses the conflicting startup before launching it. |
 | Root denied / timed out | Grant the normal Magisk shell request in that instance, then retry; basic debloat remains available without root. |
 | Shutdown cannot be verified | No offline changes start. The error identifies the process/service that Windows could not stop. |
 | Cloud file in use after automatic shutdown | Retry after the reported lock is released; completed changes are rolled back and recovery is retained. |

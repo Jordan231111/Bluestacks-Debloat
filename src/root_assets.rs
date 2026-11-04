@@ -85,7 +85,7 @@ pub fn extract(directory: &Path) -> Result<Assets> {
         let mut file = zip.by_index(i)?;
         let relative = file.enclosed_name().context("Unsafe embedded zip path")?;
         ensure!(
-            !file.name().contains(':') && relative.components().count() == 1,
+            !file.name()?.contains(':') && relative.components().count() == 1,
             "Filesystem-tool archive has an unexpected path"
         );
         if file.is_dir() {

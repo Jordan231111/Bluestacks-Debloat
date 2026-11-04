@@ -2,7 +2,7 @@
 mod ui;
 use anyhow::{Context, Result};
 use bluestacks_debloat::{
-    adb, backup_cleanup, discovery,
+    adb, backup_cleanup, batch, discovery,
     engine::{self, HostOptions, Performance},
     network, patch, platform, rooting, transaction,
 };
@@ -25,6 +25,12 @@ struct Args {
     conf: Option<PathBuf>,
     #[arg(long, global = true)]
     instance: Option<String>,
+    /// Select several instances, separated by commas (host, packages and guest).
+    #[arg(long, global = true, value_delimiter = ',', conflicts_with_all = ["instance", "all_instances"])]
+    instances: Vec<String>,
+    /// Select every discovered instance (host, packages and guest).
+    #[arg(long, global = true, conflicts_with_all = ["instance", "instances"])]
+    all_instances: bool,
     #[command(subcommand)]
     command: Option<Action>,
 }
@@ -86,6 +92,9 @@ enum Action {
         animations: bool,
         #[arg(long)]
         package: Vec<String>,
+        /// Start stopped instances in sequence and close those players afterward.
+        #[arg(long)]
+        start_offline: bool,
     },
     /// Optional Magisk module for Android hosts and launcher-only network filtering.
     RootNetwork {
@@ -182,6 +191,10 @@ fn run_cli() -> Result<()> {
     let install = discovery::select(args.install.as_deref(), args.conf.as_deref())?;
     let snapshot = discovery::snapshot(install.clone())?;
     let selected = || {
+        anyhow::ensure!(
+            args.instances.is_empty() && !args.all_instances,
+            "This command requires a single --instance NAME"
+        );
         args.instance
             .as_deref()
             .or_else(|| {
@@ -192,6 +205,23 @@ fn run_cli() -> Result<()> {
                 }
             })
             .context("Use --instance NAME; the installation contains multiple instances")
+    };
+    let selected_many = || -> Result<Vec<String>> {
+        let names = if args.all_instances {
+            snapshot.instances.iter().map(|i| i.name.clone()).collect()
+        } else if !args.instances.is_empty() {
+            args.instances.clone()
+        } else {
+            vec![selected()?.to_owned()]
+        };
+        anyhow::ensure!(!names.is_empty(), "No instances selected");
+        for name in &names {
+            anyhow::ensure!(
+                snapshot.instances.iter().any(|i| &i.name == name),
+                "Unknown instance: {name}"
+            );
+        }
+        Ok(names)
     };
     match args.command {
         Some(Action::Root {
@@ -253,7 +283,7 @@ fn run_cli() -> Result<()> {
             o.keep_features |= keep_features;
             o.enable_adb |= enable_adb;
             o.performance = performance;
-            let plan = engine::host_plan(&snapshot, selected()?, &o)?;
+            let plan = engine::host_plan_many(&snapshot, &selected_many()?, &o)?;
             if apply {
                 let result = transaction::apply(plan, &root, |s| eprintln!("{s}"))?;
                 json(&result)?;
@@ -262,16 +292,63 @@ fn run_cli() -> Result<()> {
                 json(&plan.summary())?;
             }
         }
-        Some(Action::Packages) => json(&engine::guest_scan(&install, selected()?)?.1)?,
+        Some(Action::Packages) => {
+            let names = selected_many()?;
+            if names.len() == 1 {
+                json(&engine::guest_scan(&install, &names[0])?.1)?;
+            } else {
+                let scans =
+                    batch::scan(&install, &names, false, &batch::Control::default(), |s| {
+                        eprintln!("{s}")
+                    })?;
+                json(&scans)?;
+                anyhow::ensure!(
+                    scans.iter().all(|s| s.error.is_none()),
+                    "Some Android instances could not be scanned; see per-instance errors"
+                );
+            }
+        }
         Some(Action::Guest {
             apply,
             recommended,
             animations,
             mut package,
+            start_offline,
         }) => {
+            let names = selected_many()?;
+            if names.len() > 1 || start_offline {
+                let control = batch::Control::default();
+                let scans = batch::scan(&install, &names, start_offline, &control, |s| {
+                    eprintln!("{s}")
+                })?;
+                if recommended {
+                    package.extend(
+                        scans
+                            .iter()
+                            .flat_map(|s| &s.packages)
+                            .filter(|p| p.recommended)
+                            .map(|p| p.name.clone()),
+                    );
+                }
+                package.sort();
+                package.dedup();
+                let plan =
+                    batch::review(&scans, &package, animations, start_offline, &control, |s| {
+                        eprintln!("{s}")
+                    })?;
+                if apply {
+                    let result = batch::apply(plan, &root, &control, |s| eprintln!("{s}"))?;
+                    json(&result)?;
+                    anyhow::ensure!(!result.has_issues(), "{}", result.summary());
+                } else {
+                    json(&plan.summary())?;
+                }
+                return Ok(());
+            }
+            let name = &names[0];
             if recommended {
                 package.extend(
-                    engine::guest_scan(&install, selected()?)?
+                    engine::guest_scan(&install, name)?
                         .1
                         .into_iter()
                         .filter(|p| p.recommended)
@@ -280,7 +357,7 @@ fn run_cli() -> Result<()> {
             }
             package.sort();
             package.dedup();
-            let plan = engine::guest_plan(&install, selected()?, &package, animations)?;
+            let plan = engine::guest_plan(&install, name, &package, animations)?;
             if apply {
                 let result = transaction::apply(plan, &root, |s| eprintln!("{s}"))?;
                 json(&result)?;

@@ -15,6 +15,12 @@ impl App {
     pub(super) fn changes(count: usize) -> String {
         format!("{count} {}", if count == 1 { "change" } else { "changes" })
     }
+    pub(super) fn instance_count(count: usize) -> String {
+        format!(
+            "{count} {}",
+            if count == 1 { "instance" } else { "instances" }
+        )
+    }
     pub(super) fn has_review_actions(&self) -> bool {
         matches!(
             self.tab,
@@ -36,15 +42,25 @@ impl App {
         self.plan = None;
         self.applied = None;
         self.scroll_to_preview = false;
+        self.batch_plan = None;
+        self.batch_report = None;
     }
 
     pub(super) fn action_bar(&mut self, ui: &mut egui::Ui) -> Option<ReviewAction> {
-        let count = self.plan.as_ref().map(Self::change_count);
+        let count = self
+            .batch_plan
+            .as_ref()
+            .map(batch::BatchPlan::change_count)
+            .or_else(|| self.plan.as_ref().map(Self::change_count));
         let can_apply = !self.busy
             && self.error.is_none()
-            && self.plan.as_ref().is_some_and(|p| {
-                !p.operations.is_empty() && (p.guest.is_some() || platform::is_admin())
-            });
+            && (self
+                .batch_plan
+                .as_ref()
+                .is_some_and(|p| p.change_count() > 0)
+                || self.plan.as_ref().is_some_and(|p| {
+                    !p.operations.is_empty() && (p.guest.is_some() || platform::is_admin())
+                }));
         let mut action = None;
         let (title, hint, color) = if self.busy {
             (
@@ -58,9 +74,23 @@ impl App {
                 "Check the error details. Review again before applying.",
                 Color32::from_rgb(255, 169, 157),
             )
+        } else if let Some(report) = &self.batch_report {
+            (
+                report.summary(),
+                "Each instance has its own result and recovery copy below.",
+                if report.has_issues() {
+                    Color32::from_rgb(244, 204, 128)
+                } else {
+                    ACCENT
+                },
+            )
         } else if let Some(count) = count {
             if count == 0 {
-                let unavailable = self
+                let unavailable = self.batch_plan.as_ref().is_some_and(|b| {
+                    b.entries.iter().any(|e| {
+                        e.error.is_some() || e.plan.as_ref().is_some_and(|p| !p.issues.is_empty())
+                    })
+                }) || self
                     .plan
                     .as_ref()
                     .is_some_and(|plan| !plan.issues.is_empty());
@@ -83,7 +113,9 @@ impl App {
                     },
                 )
             } else {
-                let hint = if self.plan.as_ref().is_some_and(|p| p.guest.is_none()) {
+                let hint = if self.batch_plan.is_some() {
+                    "Apply processes the ready Android instances one at a time. See unavailable instances below."
+                } else if self.plan.as_ref().is_some_and(|p| p.guest.is_none()) {
                     if platform::is_admin() {
                         "Apply automatically closes BlueStacks and its companions before making these changes."
                     } else {
@@ -138,7 +170,9 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
-                    !self.busy && self.snapshot.is_some(),
+                    !self.busy && self.snapshot.is_some()
+                        && (!matches!(self.tab, Tab::Host | Tab::Android) || !self.instances.is_empty())
+                        && (self.tab != Tab::Android || !self.scans.is_empty()),
                     egui::Button::new(if compact { "1. Review" } else { "1. Review changes" })
                         .min_size(egui::vec2(0.0, 40.0)),
                 )
@@ -174,6 +208,15 @@ impl App {
                 self.error = Some(format!("{error:#}"));
             }
         });
+        if self.busy
+            && let Some(control) = &self.queue_control
+        {
+            if control.cancelled() {
+                ui.label("Stopping after this instance…");
+            } else if ui.button("Stop after current instance").clicked() {
+                control.cancel();
+            }
+        }
         if self.busy {
             ui.add(egui::Label::new(RichText::new(title).strong().color(color)).truncate());
         } else {
@@ -196,13 +239,23 @@ impl App {
                 match self.tab {
                     Tab::Host | Tab::Cloud => self.preview_host(ctx, self.tab == Tab::Cloud),
                     Tab::Android => {
-                        if let Some(install) = self.install() {
-                            let name = self.instance.clone();
+                        if !self.scans.is_empty() {
+                            let scans = self.scans.clone();
                             let selected = self.selected.iter().cloned().collect::<Vec<_>>();
                             let animations = self.animations;
-                            self.job(ctx, "Reviewing Android changes…", move |_| {
-                                Ok(Reply::Preview(engine::guest_plan(
-                                    &install, &name, &selected, animations,
+                            let start = self.start_offline;
+                            let control = batch::Control::default();
+                            self.queue_control = Some(control.clone());
+                            self.job(ctx, "Reviewing Android changes…", move |tx| {
+                                Ok(Reply::BatchPreview(batch::review(
+                                    &scans,
+                                    &selected,
+                                    animations,
+                                    start,
+                                    &control,
+                                    |s| {
+                                        let _ = tx.send(Event::Log(s));
+                                    },
                                 )?))
                             });
                         }
@@ -223,6 +276,26 @@ impl App {
                 }
             }
             ReviewAction::Apply => {
+                if let Some(batch) = self.batch_plan.take() {
+                    if self.error.is_some() || batch.change_count() == 0 {
+                        self.batch_plan = Some(batch);
+                        return;
+                    }
+                    let root = self.root.clone();
+                    let control = batch::Control::default();
+                    self.queue_control = Some(control.clone());
+                    self.job(ctx, "Applying Android queue…", move |tx| {
+                        Ok(Reply::BatchApplied(batch::apply(
+                            batch,
+                            &root,
+                            &control,
+                            |s| {
+                                let _ = tx.send(Event::Log(s));
+                            },
+                        )?))
+                    });
+                    return;
+                }
                 if self.error.is_some()
                     || self.plan.as_ref().is_none_or(|p| p.operations.is_empty())
                 {

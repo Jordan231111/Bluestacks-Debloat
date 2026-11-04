@@ -77,7 +77,7 @@ fn processes(install: &Installation, roots: &[PathBuf]) -> Result<Vec<Process>> 
         .into_iter()
         .map(|p| (p.pid, p))
         .collect::<BTreeMap<_, _>>();
-    let mut system = System::new();
+    let mut system = System::new()?;
     system.refresh_processes(ProcessesToUpdate::All, true);
     for (pid, process) in system.processes() {
         if pid.as_u32() == std::process::id()
@@ -322,7 +322,7 @@ pub fn stop_with_cloud(
                     .collect::<Vec<_>>()
                     .join(", ")
             );
-            let mut system = System::new();
+            let mut system = System::new()?;
             system.refresh_processes(ProcessesToUpdate::All, true);
             for process in remaining {
                 // A terminating process can lose its path or acquire incomplete

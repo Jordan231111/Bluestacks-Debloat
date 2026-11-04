@@ -14,7 +14,7 @@ Clone the repository and run from its root:
 .\tools\build.ps1
 ```
 
-The repository pins `nightly-2026-10-07`, uses Rust edition 2024, and locks dependencies in `Cargo.lock`. No unstable Rust language features are used. The MSVC CRT is linked statically.
+The repository pins stable Rust `1.99.1`, uses Rust edition 2024, and locks dependencies in `Cargo.lock`. No unstable Rust language features are used. The MSVC CRT is linked statically.
 
 The build runs formatting checks, Clippy, tests, and an optimized build. Outputs go to `dist/`, including `BluestacksDebloat.exe`, documentation, license notices, and `SHA256SUMS.txt`.
 

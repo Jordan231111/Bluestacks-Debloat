@@ -162,6 +162,18 @@ fn prepare(
 }
 
 pub fn apply(plan: Plan, root: &Path, mut log: impl FnMut(String)) -> Result<ApplyReport> {
+    let guard = platform::lock(root)?;
+    apply_locked(plan, root, &guard, None, &mut log)
+}
+
+/// A queued batch holds the same operation lock across startup, writes and cleanup.
+pub(crate) fn apply_locked(
+    plan: Plan,
+    root: &Path,
+    guard: &fs::File,
+    batch_id: Option<&str>,
+    mut log: impl FnMut(String),
+) -> Result<ApplyReport> {
     let ranges = groups(&plan)?;
     let mut resources = std::collections::BTreeSet::new();
     for operation in &plan.operations {
@@ -171,7 +183,6 @@ pub fn apply(plan: Plan, root: &Path, mut log: impl FnMut(String)) -> Result<App
             operation.label
         );
     }
-    let _lock = platform::lock(root)?;
     let shutdown = if plan.guest.is_none() && !plan.operations.is_empty() {
         platform::require_admin()?;
         let paths = plan
@@ -203,6 +214,7 @@ pub fn apply(plan: Plan, root: &Path, mut log: impl FnMut(String)) -> Result<App
         status: "preparing".into(),
         installation: plan.installation,
         guest: plan.guest,
+        batch_id: batch_id.map(str::to_owned),
         entries: Vec::new(),
         issues: Vec::new(),
     };
@@ -431,7 +443,7 @@ pub fn apply(plan: Plan, root: &Path, mut log: impl FnMut(String)) -> Result<App
     checkpoint(&dir, &journal)?;
     log(format!("{} Recovery: {}", outcome.summary(), dir.display()));
     if !outcome.needs_recovery {
-        crate::backup_cleanup::finish_operation(root, &_lock, &dir, &mut log);
+        crate::backup_cleanup::finish_operation(root, guard, &dir, &mut log);
     }
     Ok(outcome)
 }

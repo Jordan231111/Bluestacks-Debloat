@@ -13,20 +13,21 @@ Windows 10/11 **64-bit**. Download and double-click the executable. No Rust inst
 | Feature | What you get |
 |---|---|
 | **Debloat** | Disable reviewed ads, promotions, telemetry, automatic downloads, and optional Android packages. |
+| **Multiple instances** | Select several instances, review once, and debloat them in a queue with a result and recovery copy for each. |
 | **Remove BlueStacks X** | Remove X/Store and the separate cloud Services companion while keeping the local emulator and Android data. |
 | **Maximum preset** | Select the available debloat and tuning options, including a 240 FPS limit. **CPU cores and RAM stay unchanged.** |
 | **Root BlueStacks** | A dedicated Magisk tab with guided installation, repair, verification, unroot, and disk recovery. |
 | **Network controls** | Inspect BlueStacks connections, block two BlueStacks advertising domains, and optionally isolate its launcher from the Internet. Google and game domains are excluded. |
-| **Backups & restore** | Keep the newest 3 verified recovery points automatically, check their integrity, restore changes, or delete a backup manually. |
+| **Backups & restore** | Keep the newest 3 verified recovery actions automatically, including every instance in a batch. Check integrity, restore changes, or delete a backup manually. |
 
 The interface adapts to smaller windows and Windows display scaling, with adjustable text size.
 
 ## Get started
 
-1. **Open the app**, accept Windows' administrator prompt, and select your BlueStacks instance. Installation folders are detected automatically.
+1. **Open the app**, accept Windows' administrator prompt, and check the instances you want in Debloat & tune. Installation folders are detected automatically.
 2. **Choose your options** in Debloat & tune, or select Maximum debloat.
 3. **Review, then apply using the fixed bottom bar.** Apply closes BlueStacks and its companions automatically, saves recovery copies, and verifies the changes.
-4. **Finish Android and Network options** with the selected instance running and ADB enabled in BlueStacks Settings → Advanced. Rooting is a separate action in Root BlueStacks.
+4. **Open Android apps**, enable local ADB, and scan the selected instances. Stopped instances can start and close one at a time; already running players stay open. Select apps, Review, then Apply. Network root controls and Root BlueStacks use the single-instance picker.
 
 Maximum selects options across tabs and includes a reversible player patch to keep feature choices after restart; apply each stage when prompted. Use **Backups & restore** to undo debloat changes, or the Root tab for disk recovery.
 
@@ -34,7 +35,7 @@ If one independent option fails, successful changes stay applied. The app shows 
 
 ## Before you use it
 
-- Tested on **BlueStacks 5.22.265.1013**, with Android 9, 11, and 13 instances. The complete fresh-root cycle was tested on Android 11. See the [validation record](docs/VALIDATION.md).
+- Tested on **BlueStacks 5.22.265.1013**, with Nougat 32/64-bit and Android 9, 11 and 13 instances. Batch apply, cold-boot persistence and exact restore were checked on all five variants. The complete fresh-root cycle was tested on Android 11. See the [validation record](docs/VALIDATION.md).
 - Rooting and binary patching are optional advanced features. Some games reject rooted devices. A higher FPS limit does not guarantee higher performance and can increase power use.
 - Launcher isolation also disables its online recommendations, search, and Store features. It requires Magisk root.
 - Recovery copies use disk space. Unfinished or damaged recovery points stay visible for inspection. Root recovery restores data to its saved point in time. This release is unsigned.

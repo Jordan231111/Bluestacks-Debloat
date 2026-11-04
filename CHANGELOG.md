@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.0 — 2026-11-03
+
+- Move to stable Rust 1.99.1 and update all direct dependencies and the transitive lockfile; the dependency audit has no known vulnerabilities or warnings.
+- Upgrade the UI to eframe/egui 0.37, preserve clipboard/link support, remove the unmaintained font parser, and compact navigation at enlarged text sizes.
+- Recover failed private ADB daemons without borrowing or implicitly starting an untracked server; recheck player ownership before reconnecting.
+- Report configured ADB port conflicts before starting an instance, and skip booting already-clean entries during mixed batch Apply.
+- Fix Android tools rejecting the correct instance after daylight-saving changes or shared-log rotation; retain process ownership and stale-PID checks.
+- Retry interrupted read-only ADB commands, including transient Android 13 transport failures.
+- Check both supported BlueStacks launcher packages, including older Android images.
+- Select multiple instances with explicit checkboxes, Select all, Clear selection and instance search.
+- Apply host settings for the selection in one configuration transaction; apply shared PC changes once.
+- Scan and debloat Android instances in a queue, starting and closing stopped instances individually while keeping existing players open.
+- Preserve delayed Android package/settings writes before closing queued players, including Nougat's writeback window.
+- Review the exact Android scan snapshot without another boot; show per-instance results and allow stopping after the current instance.
+- Keep every instance's recovery copy from a batch together under the newest-three-actions retention policy.
+- Add `--instances`, `--all-instances` and `guest --start-offline` to the CLI.
+
 ## 1.0.3 — 2026-10-07
 
 - Keep successful independent changes when another option fails, with applied/failed/skipped counts and recovery.

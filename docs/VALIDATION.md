@@ -1,14 +1,49 @@
 # Validation record
 
-Local validation was performed on Windows 10 IoT Enterprise LTSC x64, BlueStacks **5.22.265.1013**, with **Pie64, Rvc64 and Tiramisu64** instances. Rust is pinned to nightly **2026-10-07**, edition 2024. This is a local validation record, not a claim of compatibility with every BlueStacks release or game.
+Local validation was performed on Windows 10 IoT Enterprise LTSC x64, BlueStacks **5.22.265.1013**. Version 1.1.0 adds disposable **Nougat32, Nougat64, Pie64, Rvc64 and Tiramisu64** tests to the original three-version validation below. The final build pins stable Rust **1.99.1**, edition 2024. This is a local validation record, not a claim of compatibility with every BlueStacks release or game.
+
+## Updated toolchain and stress verification — 2026-11-04
+
+All direct dependencies were checked against the crates.io stable releases and updated, including eframe/egui 0.37, sysinfo 0.40, winreg 0.56, SHA-2 0.11 and ZIP 9.3. The transitive lockfile was refreshed. The UI now uses eframe's root-UI/panel APIs, with clipboard and hyperlink support explicitly enabled. The new font stack removes the unmaintained ttf-parser dependency. The SHA-256 text representation and owned registry snapshots preserve existing recovery formats; both retained legacy recovery points passed their full integrity audit.
+
+- **100 reconnect/package/animation inspections** passed across **five concurrent Android variants**. Median complete inspection was **3.052 seconds**, maximum **9.004 seconds** under this load.
+- **Two complete five-variant cycles** applied every installed reviewed optional package and animation option, verified values after cold boots, reapplied without writes or extra recovery points, restored every recorded value, and verified the restoration after another cold boot. Wrong-identity refusal, an unavailable queue entry, grouped recovery retention and cancellation were checked as well.
+- A **forced private-daemon exit** recovered with a new owned child and unchanged guest identity. Commands explicitly name the loopback server host to prevent adb from implicitly starting an untracked daemon. Transient setup faults restart only the owned foreground child.
+- The fresh Nougat masters exposed a vendor **5555 port collision** when started together. Startup now reports an occupied configured port before launching. The concurrency runs used disposable clones with separate ports; the serial queue continues to support the masters individually.
+- **840 automated layouts** exercised all seven tabs at four window sizes, five text scales and normal/error/busy states with 40 instance rows. No layout panic, invalid clip rectangle or unintended worker operation occurred.
+- The native OpenGL window stayed responsive through **40 size changes**. A native UI fixture selected 12 instances, reviewed/applied 13 settings, reported zero further changes and restored the configuration byte-for-byte. Enlarged-text navigation was compacted to leave more room for content.
+- Native root system-file preparation and read-back verification passed on an **expendable copied 8 GiB system partition**, including the staged commit. The original master was not written. A complete live root-install/unroot cycle was not repeated; the original root-cycle evidence below still describes its tested scope.
+
+Stress reports are under `.local/evidence/stress-20261104` and excluded from Git. Temporary Android instances, copied disks, fixture files and stress executables are removed after verification; concise result records remain for the audit trail.
+
+## 1.1.0 Android and multi-instance validation — 2026-11-03
+
+Five fresh instances were created through BlueStacks' Multi-instance Manager, including downloading the two missing Nougat images. Android recovery and UI fixtures used isolated application-state directories. The original running Android 11 player remained open throughout guest testing.
+
+| Check | Observed result |
+|---|---|
+| Reproduce the broken Android tab | The correct Android 11 port was refused because BlueStacks logged a stale `-0400` offset while Windows used `-0500`. Instance identification and package scanning passed after correction. |
+| Idle player after shared-log rotation | Per-instance UTC startup headers retained the original player's identity after Player.log rotated. The native Android tab scanned its four reviewed optional packages and produced a review. |
+| All five Android variants | Scan, review and apply succeeded on Nougat 32-bit, Nougat 64-bit, Android 9, Android 11 and Android 13. The final batch applied and verified 18 changes; package availability varied by version. |
+| Persistence after cold boots | All five instances were closed and booted again. Every repeated review returned zero changes and no instance errors. This caught and corrected premature closure before delayed framework writes. Nougat uses a writeback hold and sync because its power command is blocked. |
+| Exact recovery | Every batch recovery passed its integrity audit. Each instance was started, restored, closed and scanned again; recorded package and animation before/after values matched the original preview exactly. |
+| Wrong Android identity | A deliberately mismatched identity was rejected before a transaction or package/settings mutation. |
+| Partial batch | A deliberate unavailable entry between valid entries remained visible while all five real instances applied successfully. |
+| Cancellation | Stopping after the first complete scan left the remaining four explicitly unscanned, with no temporary players left open. |
+| Shared host transaction | A three-instance fixture verified one shared config write, deduplicated selection, unchanged CPU/RAM and unchecked-instance values, and exact restore. Empty and unknown selections were rejected. |
+| Recovery retention | Five recovery copies from one batch survived as one recovery action. Regression tests also retired an entire old batch together. |
+| Desktop workflow | Native UI checks covered explicit selection, Select all, Clear selection disabling Review, host review without writes, Android scanning/review, and fixed actions at 600×700 and 800×620 with 200% text. |
+| Temporary-instance cleanup | All five test instances, including both newly downloaded Nougat masters, were deleted through the Manager. Only the original Pie64, Rvc64 and Tiramisu64 remain; their configuration keys match the pre-test copy. The original player PID and birth time were preserved. |
+
+Private evidence is in `.local/evidence/batch-review`, including per-instance scans, previews, apply reports, backup audits, cold-boot results, exact-restore comparisons, cancellation and cleanup records. The full root installation/unroot cycle was not repeated for 1.1.0.
 
 ## Automated checks
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --all-targets -- -D warnings`
-- `cargo test --locked --all-targets`: **78 tests**.
+- `cargo test --locked --all-targets`: **93 tests** (92 library tests and one 840-layout UI stress test).
 - Optimized Windows x64 build with a static MSVC CRT.
-- `cargo audit` (2026-10-07): zero known Rust dependency vulnerabilities. One maintenance advisory remains for the UI's transitive `ttf-parser` 0.25.1 dependency (RUSTSEC-2026-0192); the app uses bundled fonts. This audit does not cover the separate embedded root helper binaries.
+- `cargo audit` (2026-11-04): **zero known Rust dependency vulnerabilities and zero warnings** after the complete dependency refresh. This audit does not cover the separate embedded root helper binaries.
 
 Tests cover config byte preservation and stale previews, instance isolation, preserving CPU/RAM in Maximum, migrating away from legacy Google block entries, backup corruption (including same-length root configuration corruption), conflict-aware restore/retry, recovery despite journal-write failure, malformed/unsupported PE images, exact/idempotent binary edits, embedded payload checksums/extraction, partition bounds and short disk reads, and system-file ownership/mode verification.
 

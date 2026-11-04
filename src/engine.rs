@@ -73,12 +73,28 @@ impl HostOptions {
 }
 
 pub fn host_plan(snapshot: &Snapshot, instance: &str, options: &HostOptions) -> Result<Plan> {
+    host_plan_many(snapshot, &[instance.to_owned()], options)
+}
+
+/// One config transaction for every selected instance; shared host operations run once.
+pub fn host_plan_many(
+    snapshot: &Snapshot,
+    instances: &[String],
+    options: &HostOptions,
+) -> Result<Plan> {
     let install = &snapshot.installation;
     install.validate()?;
+    let instances = instances.iter().collect::<std::collections::BTreeSet<_>>();
     ensure!(
-        snapshot.instances.iter().any(|i| i.name == instance),
-        "Select an existing Android instance"
+        !instances.is_empty(),
+        "Select at least one Android instance"
     );
+    for instance in &instances {
+        ensure!(
+            snapshot.instances.iter().any(|i| &i.name == *instance),
+            "Unknown Android instance: {instance}"
+        );
+    }
     let config = Config::read(&install.conf())?;
     let mut changes = BTreeMap::<String, Edit>::new();
     let mut notes = Vec::new();
@@ -115,13 +131,34 @@ pub fn host_plan(snapshot: &Snapshot, instance: &str, options: &HostOptions) -> 
             }
         }
     }
-    let instance_key = |name: &str| format!("bst.instance.{instance}.{name}");
-    if options.ads {
-        set(&instance_key("split_ad_enabled"), "0");
-    }
-    if options.quiet {
-        set(&instance_key("enable_notifications"), "0");
-        set(&instance_key("enable_mobile_notifications"), "0");
+    for instance in &instances {
+        let instance_key = |name: &str| format!("bst.instance.{instance}.{name}");
+        if options.ads {
+            set(&instance_key("split_ad_enabled"), "0");
+        }
+        if options.quiet {
+            set(&instance_key("enable_notifications"), "0");
+            set(&instance_key("enable_mobile_notifications"), "0");
+        }
+        if options.performance != Performance::Keep {
+            let cpu_budget = (snapshot.cpu_count / 2).max(1) as u32;
+            let mem_budget = (snapshot.ram_mb / 3).max(1024) as u32;
+            let (cores, ram, fps) = match options.performance {
+                Performance::Balanced => (4, 4096, 60),
+                Performance::Gaming => (8, 8192, 60),
+                Performance::LowMemory => (2, 2048, 30),
+                Performance::Keep => unreachable!(),
+            };
+            set(&instance_key("cpus"), &cores.min(cpu_budget).to_string());
+            set(&instance_key("ram"), &ram.min(mem_budget).to_string());
+            set(&instance_key("max_fps"), &fps.to_string());
+            set(&instance_key("enable_high_fps"), "0");
+        }
+        if options.high_fps {
+            set(&instance_key("enable_high_fps"), "1");
+            set(&instance_key("max_fps"), "240");
+            set(&instance_key("enable_vsync"), "0");
+        }
     }
     if options.enable_adb {
         set("bst.enable_adb_access", "1");
@@ -131,25 +168,10 @@ pub fn host_plan(snapshot: &Snapshot, instance: &str, options: &HostOptions) -> 
         set("bst.prefer_dedicated_gpu", "1");
     }
     if options.performance != Performance::Keep {
-        let cpu_budget = (snapshot.cpu_count / 2).max(1) as u32;
-        let mem_budget = (snapshot.ram_mb / 3).max(1024) as u32;
-        let (cores, ram, fps) = match options.performance {
-            Performance::Balanced => (4, 4096, 60),
-            Performance::Gaming => (8, 8192, 60),
-            Performance::LowMemory => (2, 2048, 30),
-            Performance::Keep => unreachable!(),
-        };
-        set(&instance_key("cpus"), &cores.min(cpu_budget).to_string());
-        set(&instance_key("ram"), &ram.min(mem_budget).to_string());
-        set(&instance_key("max_fps"), &fps.to_string());
-        set(&instance_key("enable_high_fps"), "0");
-        notes.push("CPU/RAM limits apply only to the selected instance and reserve resources for Windows. Renderer and resolution stay as configured. FPS improvements depend on the game and hardware.".into());
+        notes.push("CPU/RAM limits apply to each selected instance. Running several together increases total memory use. Renderer and resolution stay as configured.".into());
     }
     if options.high_fps {
-        set(&instance_key("enable_high_fps"), "1");
-        set(&instance_key("max_fps"), "240");
-        set(&instance_key("enable_vsync"), "0");
-        notes.push("High-frame-rate mode raises the limit to 240 FPS and disables emulator VSync. Actual FPS depends on the game, display and GPU; power use can increase. CPU cores and RAM are not changed by this option.".into());
+        notes.push("High-frame-rate mode raises the limit to 240 FPS and disables emulator VSync for each selected instance. Actual FPS depends on the game, display and GPU; power use can increase. CPU cores and RAM are not changed by this option.".into());
     }
     let mut operations = Vec::new();
     let feature_flags_changed = changes.keys().any(|key| key.starts_with("bst.feature."));
@@ -283,11 +305,16 @@ pub fn host_plan(snapshot: &Snapshot, instance: &str, options: &HostOptions) -> 
             )),
         }
     }
-    notes.push("Host-wide settings affect all instances. Instance settings affect only the selected instance. Apply automatically closes BlueStacks and its companions, then verifies shutdown before making changes. Review does not stop anything.".into());
+    let names = instances
+        .iter()
+        .map(|n| n.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    notes.push(format!("Selected instances: {names}. Instance settings apply only to this selection. Shared PC settings apply once and affect all instances. Apply closes all BlueStacks instances and companions before making host changes. Review does not stop anything."));
     Ok(Plan {
         installation: install.clone(),
         guest: None,
-        title: format!("Host debloat • {instance}"),
+        title: format!("Host debloat • {names}"),
         operations,
         notes,
         issues,
@@ -326,6 +353,16 @@ pub fn guest_plan(
     animations: bool,
 ) -> Result<Plan> {
     let adb = Client::connect(install, instance)?;
+    guest_plan_connected(&adb, selected, animations)
+}
+
+pub(crate) fn guest_plan_connected(
+    adb: &Client,
+    selected: &[String],
+    animations: bool,
+) -> Result<Plan> {
+    let install = &adb.guest.installation;
+    let instance = &adb.guest.instance;
     let candidates = adb.candidates()?;
     let mut operations = Vec::new();
     let mut issues = Vec::new();
@@ -403,6 +440,80 @@ pub fn root_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn batch_host_applies_shared_settings_once_and_restores_every_selected_instance() {
+        let t = tempfile::tempdir().unwrap();
+        for file in ["HD-Player.exe", "HD-Adb.exe"] {
+            fs::write(t.path().join(file), []).unwrap();
+        }
+        let mut original =
+            "# preserve this comment\r\nbst.enable_programmatic_ads=\"1\"\r\n".to_owned();
+        let instances = ["Pie64", "Rvc64", "Tiramisu64"].iter().map(|name| {
+            original.push_str(&format!("bst.instance.{name}.split_ad_enabled=\"1\"\r\nbst.instance.{name}.cpus=\"3\"\r\nbst.instance.{name}.ram=\"3072\"\r\nbst.instance.{name}.max_fps=\"60\"\r\nbst.instance.{name}.enable_high_fps=\"0\"\r\n"));
+            discovery::Instance { name: (*name).into(), display_name: (*name).into(), adb_port: None, cpus: 3, ram_mb: 3072, fps: 60 }
+        }).collect();
+        let path = t.path().join("bluestacks.conf");
+        fs::write(&path, &original).unwrap();
+        let snapshot = Snapshot {
+            installation: Installation {
+                install_dir: t.path().into(),
+                data_dir: t.path().into(),
+                version: "fixture".into(),
+                source: "fixture".into(),
+            },
+            instances,
+            processes: vec![],
+            cpu_count: 16,
+            ram_mb: 32768,
+            admin: true,
+        };
+        let options = HostOptions {
+            high_fps: true,
+            ..HostOptions::default()
+        };
+        assert!(host_plan_many(&snapshot, &[], &options).is_err());
+        assert!(host_plan_many(&snapshot, &["missing".into()], &options).is_err());
+        let plan = host_plan_many(
+            &snapshot,
+            &["Pie64".into(), "Rvc64".into(), "Pie64".into()],
+            &options,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.operations.len(),
+            1,
+            "Shared config must be one atomic write"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            original,
+            "Review must not write"
+        );
+        let root = t.path().join("state");
+        let report = transaction::apply(plan, &root, |_| {}).unwrap();
+        assert!(!report.has_issues(), "{}", report.summary());
+        let after = Config::read(&path).unwrap();
+        assert_eq!(after.get("bst.enable_programmatic_ads"), Some("0"));
+        for name in ["Pie64", "Rvc64"] {
+            assert_eq!(
+                after.get(&format!("bst.instance.{name}.split_ad_enabled")),
+                Some("0")
+            );
+            assert_eq!(
+                after.get(&format!("bst.instance.{name}.max_fps")),
+                Some("240")
+            );
+            assert_eq!(after.get(&format!("bst.instance.{name}.cpus")), Some("3"));
+            assert_eq!(after.get(&format!("bst.instance.{name}.ram")), Some("3072"));
+        }
+        assert_eq!(
+            after.get("bst.instance.Tiramisu64.split_ad_enabled"),
+            Some("1")
+        );
+        assert_eq!(after.get("bst.instance.Tiramisu64.max_fps"), Some("60"));
+        transaction::restore(&report.backup.unwrap(), &root, |_| {}).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
     #[test]
     fn missing_hosts_is_created_and_conflicting_hosts_fail_without_modification() {
         let temp = tempfile::tempdir().unwrap();

@@ -180,6 +180,8 @@ pub struct Journal {
     pub status: String,
     pub installation: Installation,
     pub guest: Option<Guest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    batch_id: Option<String>,
     entries: Vec<Entry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     issues: Vec<ApplyIssue>,
@@ -359,13 +361,13 @@ pub fn read_registry(p: &RegistryPath) -> Result<Value> {
     match key.get_raw_value(&p.name) {
         Ok(v) => Ok(Value::Registry {
             kind: v.vtype as u32,
-            bytes: v.bytes,
+            bytes: v.bytes.into_owned(),
         }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Value::Missing),
         Err(e) => Err(e.into()),
     }
 }
-fn regvalue(kind: u32, bytes: Vec<u8>) -> Result<RegValue> {
+fn regvalue(kind: u32, bytes: Vec<u8>) -> Result<RegValue<'static>> {
     let vtype = match kind {
         0 => REG_NONE,
         1 => REG_SZ,
@@ -381,7 +383,10 @@ fn regvalue(kind: u32, bytes: Vec<u8>) -> Result<RegValue> {
         11 => REG_QWORD,
         _ => bail!("Unsupported registry type {kind}"),
     };
-    Ok(RegValue { vtype, bytes })
+    Ok(RegValue {
+        vtype,
+        bytes: bytes.into(),
+    })
 }
 pub fn string_value(s: &str) -> Value {
     Value::Registry {
@@ -423,7 +428,7 @@ struct Tree {
 fn capture_tree(k: &RegKey) -> Result<Tree> {
     let mut values = k
         .enum_values()
-        .map(|v| v.map(|(n, v)| (n, v.vtype as u32, v.bytes)))
+        .map(|v| v.map(|(n, v)| (n, v.vtype as u32, v.bytes.into_owned())))
         .collect::<std::io::Result<Vec<_>>>()?;
     values.sort_by(|a, b| a.0.cmp(&b.0));
     let mut names = k.enum_keys().collect::<std::io::Result<Vec<_>>>()?;
@@ -511,7 +516,7 @@ pub fn tree_hash(path: &Path) -> Result<String> {
             }
         }
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(platform::hex(&hash.finalize()))
 }
 fn save_value(dir: &Path, stem: &str, value: &Value) -> Result<Saved> {
     if let Value::Bytes(bytes) = value {
@@ -548,6 +553,7 @@ fn save(dir: &Path, journal: &Journal) -> Result<()> {
 
 mod apply;
 pub use apply::apply;
+pub(crate) use apply::apply_locked;
 fn restore_entry(
     dir: &Path,
     entry: &Entry,
@@ -867,6 +873,7 @@ mod tests {
             issues: vec![],
             schema: 1,
             id: "test".into(),
+            batch_id: None,
             title: "test".into(),
             created: "test".into(),
             status: "applying".into(),
@@ -923,6 +930,7 @@ mod tests {
             issues: vec![],
             schema: 1,
             id: "conflict".into(),
+            batch_id: None,
             title: "test".into(),
             created: "test".into(),
             status: "applied".into(),
@@ -995,6 +1003,7 @@ mod tests {
             issues: vec![],
             schema: 1,
             id: "storage-failure".into(),
+            batch_id: None,
             title: "test".into(),
             created: "test".into(),
             status: "applied".into(),

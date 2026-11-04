@@ -47,7 +47,7 @@ pub fn hash_file(path: &Path) -> Result<String> {
         }
         hash.update(&b[..n]);
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(platform::hex(&hash.finalize()))
 }
 pub fn copy_file(source: &Path, dest: &Path, log: &mut impl FnMut(String)) -> Result<String> {
     let parent = dest.parent().context("Backup target has no parent")?;
@@ -85,7 +85,7 @@ pub fn copy_file(source: &Path, dest: &Path, log: &mut impl FnMut(String)) -> Re
             "Verifying the recovery copy of {}",
             source.file_name().unwrap_or_default().to_string_lossy()
         ));
-        let hash = format!("{:x}", input.hash.finalize());
+        let hash = platform::hex(&input.hash.finalize());
         ensure!(hash_file(&temp)? == hash, "Disk backup verification failed");
         let ok = unsafe {
             if dest.exists() {

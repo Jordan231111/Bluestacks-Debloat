@@ -1,6 +1,8 @@
-egui-MIT.txt  https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT
-egui-Apache.txt  https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-APACHE
-clipboard-win-BSL.txt  https://raw.githubusercontent.com/DoumanAsh/clipboard-win/3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342/LICENSE
+egui-MIT.txt  https://raw.githubusercontent.com/emilk/egui/418687fa18fdac8a9b1b6c8f4a2eb1afd2df4c47/LICENSE-MIT
+egui-Apache.txt  https://raw.githubusercontent.com/emilk/egui/418687fa18fdac8a9b1b6c8f4a2eb1afd2df4c47/LICENSE-APACHE
+clipboard-win-BSL.txt  https://raw.githubusercontent.com/DoumanAsh/clipboard-win/ed27008ae5d1f10cfbb266de039f0fb35fd05a56/LICENSE
+accesskit-MIT.txt  https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-MIT
+accesskit-Apache.txt  https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-APACHE
 gl_generator-Apache.txt  https://raw.githubusercontent.com/brendanzab/gl-rs/ea503e8d5fb6d73c6030e6191ce738cd3bf3433e/LICENSE
 khronos_api-Apache.txt  https://raw.githubusercontent.com/brendanzab/gl-rs/f150967b1c44ae888e6676f93f639ebc82771bdc/LICENSE
 profiling-MIT.txt  https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT

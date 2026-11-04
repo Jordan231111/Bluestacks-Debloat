@@ -29,6 +29,7 @@ pub struct Record {
     pub can_delete: bool,
     pub problem: Option<String>,
     pub verified: bool,
+    pub batch_id: Option<String>,
 }
 
 fn journal_name(kind: Kind) -> &'static str {
@@ -142,6 +143,15 @@ pub fn list(root: &Path) -> Result<Vec<Record>> {
                         kind,
                         problem: None,
                         verified: false,
+                        batch_id: journal
+                            .get("batch_id")
+                            .filter(|v| !v.is_null())
+                            .map(|v| {
+                                let id = v.as_str().context("Invalid batch recovery ID")?;
+                                uuid::Uuid::parse_str(id).context("Invalid batch recovery ID")?;
+                                Ok::<_, anyhow::Error>(id.to_owned())
+                            })
+                            .transpose()?,
                     };
                     record.problem = verify_record(root, &record, false)
                         .err()
@@ -157,6 +167,7 @@ pub fn list(root: &Path) -> Result<Vec<Record>> {
                     can_delete: false,
                     problem: Some(format!("{error:#}")),
                     verified: false,
+                    batch_id: None,
                 });
             records.push(record);
         }
@@ -515,7 +526,7 @@ fn prune_locked(
     current: Option<&Path>,
     log: &mut impl FnMut(String),
 ) -> Result<usize> {
-    let mut kept = 0;
+    let mut kept = BTreeSet::new();
     let mut deleted = 0;
     let mut problems = Vec::new();
     let mut records = list(root)?;
@@ -544,10 +555,14 @@ fn prune_locked(
                         .unwrap_or("Recovery is unfinished")
                 );
             }
-            if kept < KEEP_LATEST {
+            let group = record
+                .batch_id
+                .clone()
+                .unwrap_or_else(|| record.path.to_string_lossy().into_owned());
+            if kept.contains(&group) || kept.len() < KEEP_LATEST {
                 log(format!("Checking retained backup: {}", record.title));
                 verify_record(root, &record, true)?;
-                kept += 1;
+                kept.insert(group);
             } else {
                 // A damaged old point cannot displace a newer verified recovery point.
                 delete_locked(root, &record)?;
@@ -587,6 +602,52 @@ pub(crate) fn finish_operation(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn retention_keeps_all_batch_members_and_retires_them_as_one_action() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        let old = point(root, 0, Kind::Debloat, "applied", "2026-10-07T09:00:00Z");
+        let a = point(root, 1, Kind::Debloat, "applied", "2026-10-07T10:00:00Z");
+        let b = point(root, 2, Kind::Root, "Complete", "2026-10-07T11:00:00Z");
+        let batch = uuid::Uuid::new_v4().to_string();
+        let mut members = Vec::new();
+        for i in 3..8 {
+            let member = point(
+                root,
+                i,
+                Kind::Debloat,
+                "applied",
+                &format!("2026-10-07T12:00:0{i}Z"),
+            );
+            let journal_path = member.join("journal.json");
+            let mut journal = platform::read_journal(&journal_path).unwrap();
+            journal["batch_id"] = batch.clone().into();
+            platform::write_journal(&journal_path, &journal).unwrap();
+            members.push(member);
+        }
+        prune(root, |_| {}).unwrap();
+        assert!(!old.exists());
+        assert!(a.exists() && b.exists());
+        assert!(
+            members.iter().all(|p| p.exists()),
+            "A large batch must retain every instance's recovery"
+        );
+        for i in 8..11 {
+            point(
+                root,
+                i,
+                Kind::Debloat,
+                "applied",
+                &format!("2026-10-07T13:00:{i:02}Z"),
+            );
+        }
+        prune(root, |_| {}).unwrap();
+        assert!(members.iter().all(|p| !p.exists()));
+        assert_eq!(
+            audit(root).unwrap().iter().filter(|r| r.verified).count(),
+            KEEP_LATEST
+        );
+    }
 
     fn point(root: &Path, index: u8, kind: Kind, status: &str, created: &str) -> PathBuf {
         let id = format!("20261007-1200{index:02}-{}", uuid::Uuid::new_v4());

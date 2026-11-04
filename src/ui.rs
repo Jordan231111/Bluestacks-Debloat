@@ -1,13 +1,16 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 mod action_bar;
+mod android_panel;
 mod backups_panel;
 mod host_panel;
 mod responsive;
 mod root_panel;
+#[cfg(test)]
+mod tests;
 use bluestacks_debloat::{
     adb::{Client, Package},
-    backup_cleanup,
+    backup_cleanup, batch,
     discovery::{self, Installation, Snapshot},
     engine::{self, HostOptions, Performance},
     network, platform, rooting,
@@ -23,7 +26,7 @@ use std::{
 
 const ACCENT: Color32 = Color32::from_rgb(116, 208, 194);
 const MUTED: Color32 = Color32::from_rgb(156, 169, 190);
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 enum Tab {
     Overview,
     Host,
@@ -40,12 +43,16 @@ struct Preferences {
     conf_path: String,
     text_scale: f32,
     tab: Tab,
+    #[serde(default)]
+    instances: Option<BTreeSet<String>>,
 }
 enum Reply {
     Scanned(Snapshot),
     Preview(Plan),
     Applied(transaction::ApplyReport),
-    Packages(Vec<Package>),
+    Packages(Vec<batch::InstanceScan>),
+    BatchPreview(batch::BatchPlan),
+    BatchApplied(batch::BatchReport),
     Network(network::Report),
     Backups(Vec<backup_cleanup::Record>),
     Done(String),
@@ -61,6 +68,9 @@ struct App {
     tab: Tab,
     snapshot: Option<Snapshot>,
     instance: String,
+    instances: BTreeSet<String>,
+    selection_initialized: bool,
+    instance_filter: String,
     install_path: String,
     conf_path: String,
     options: HostOptions,
@@ -68,6 +78,11 @@ struct App {
     applied: Option<action_bar::AppliedChanges>,
     scroll_to_preview: bool,
     packages: Vec<Package>,
+    scans: Vec<batch::InstanceScan>,
+    batch_plan: Option<batch::BatchPlan>,
+    batch_report: Option<batch::BatchReport>,
+    start_offline: bool,
+    queue_control: Option<batch::Control>,
     selected: BTreeSet<String>,
     animations: bool,
     report: Option<network::Report>,
@@ -93,7 +108,8 @@ struct App {
 }
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut style = (*cc.egui_ctx.style()).clone();
+        cc.egui_ctx.set_theme(egui::Theme::Dark);
+        let mut style = (*cc.egui_ctx.style_of(egui::Theme::Dark)).clone();
         style.visuals = egui::Visuals::dark();
         style.visuals.panel_fill = Color32::from_rgb(20, 25, 34);
         style.visuals.window_fill = Color32::from_rgb(25, 31, 42);
@@ -111,12 +127,34 @@ impl App {
         style
             .text_styles
             .insert(egui::TextStyle::Heading, egui::FontId::proportional(27.0));
-        cc.egui_ctx.set_style(style);
+        cc.egui_ctx.set_style_of(egui::Theme::Dark, style);
+        let mut app = Self::blank(platform::state_dir());
+        if let Ok(bytes) = std::fs::read(app.root.join("ui-preferences.json"))
+            && let Ok(saved) = serde_json::from_slice::<Preferences>(&bytes)
+        {
+            app.instance = saved.instance;
+            if let Some(instances) = saved.instances {
+                app.instances = instances;
+                app.selection_initialized = true;
+            }
+            app.install_path = saved.install_path;
+            app.conf_path = saved.conf_path;
+            app.text_scale = saved.text_scale.clamp(1.0, 2.0);
+            app.tab = saved.tab;
+            cc.egui_ctx.set_zoom_factor(app.text_scale);
+        }
+        app.scan(&cc.egui_ctx);
+        app
+    }
+    fn blank(root: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel();
-        let mut app = Self {
+        Self {
             tab: Tab::Overview,
             snapshot: None,
             instance: String::new(),
+            instances: BTreeSet::new(),
+            selection_initialized: false,
+            instance_filter: String::new(),
             install_path: String::new(),
             conf_path: String::new(),
             options: HostOptions::default(),
@@ -124,6 +162,11 @@ impl App {
             applied: None,
             scroll_to_preview: false,
             packages: vec![],
+            scans: vec![],
+            batch_plan: None,
+            batch_report: None,
+            start_offline: true,
+            queue_control: None,
             selected: BTreeSet::new(),
             animations: true,
             report: None,
@@ -145,20 +188,8 @@ impl App {
             text_scale: 1.0,
             tx,
             rx,
-            root: platform::state_dir(),
-        };
-        if let Ok(bytes) = std::fs::read(app.root.join("ui-preferences.json"))
-            && let Ok(saved) = serde_json::from_slice::<Preferences>(&bytes)
-        {
-            app.instance = saved.instance;
-            app.install_path = saved.install_path;
-            app.conf_path = saved.conf_path;
-            app.text_scale = saved.text_scale.clamp(1.0, 2.0);
-            app.tab = saved.tab;
-            cc.egui_ctx.set_zoom_factor(app.text_scale);
+            root,
         }
-        app.scan(&cc.egui_ctx);
-        app
     }
     fn save_preferences(&self) {
         let prefs = Preferences {
@@ -167,6 +198,7 @@ impl App {
             conf_path: self.conf_path.clone(),
             text_scale: self.text_scale,
             tab: self.tab,
+            instances: Some(self.instances.clone()),
         };
         if std::fs::create_dir_all(&self.root).is_ok()
             && let Ok(bytes) = serde_json::to_vec_pretty(&prefs)
@@ -233,6 +265,7 @@ impl App {
                 }
                 Event::Finished(r) => {
                     self.busy = false;
+                    self.queue_control = None;
                     match *r {
                         Ok(reply) => {
                             self.status = "Ready".into();
@@ -245,14 +278,22 @@ impl App {
                                             .map(|i| i.name.clone())
                                             .unwrap_or_default();
                                     }
+                                    self.instances
+                                        .retain(|name| s.instances.iter().any(|i| &i.name == name));
+                                    if !self.selection_initialized {
+                                        if !self.instance.is_empty() {
+                                            self.instances.insert(self.instance.clone());
+                                        }
+                                        self.selection_initialized = true;
+                                    }
+                                    self.invalidate_android();
                                     self.install_path =
                                         s.installation.install_dir.to_string_lossy().into();
                                     self.conf_path =
                                         s.installation.data_dir.to_string_lossy().into();
                                     self.snapshot = Some(s);
                                     self.refresh_backup_list();
-                                    self.plan = None;
-                                    self.applied = None;
+                                    self.clear_preview();
                                     self.log("Installation inspected. No settings changed.".into());
                                 }
                                 Reply::Preview(p) => {
@@ -295,7 +336,9 @@ impl App {
                                         backup_cleanup::list(&self.root).unwrap_or_default();
                                 }
                                 Reply::Packages(p) => {
-                                    self.selected = p
+                                    self.packages = Self::aggregate_packages(&p);
+                                    self.selected = self
+                                        .packages
                                         .iter()
                                         .filter(|p| {
                                             (p.recommended || self.maximum_selected)
@@ -303,9 +346,31 @@ impl App {
                                         })
                                         .map(|p| p.name.clone())
                                         .collect();
-                                    self.packages = p;
-                                    self.plan = None;
-                                    self.applied = None;
+                                    self.scans = p;
+                                    self.clear_preview();
+                                    let connected =
+                                        self.scans.iter().filter(|s| s.error.is_none()).count();
+                                    self.status = format!(
+                                        "{connected}/{} instances scanned. Select apps, then Review.",
+                                        self.scans.len()
+                                    );
+                                }
+                                Reply::BatchPreview(plan) => {
+                                    self.status = format!(
+                                        "{} ready across {}. Review each result below.",
+                                        Self::changes(plan.change_count()),
+                                        Self::instance_count(plan.entries.len())
+                                    );
+                                    self.batch_plan = Some(plan);
+                                    self.scroll_to_preview = true;
+                                }
+                                Reply::BatchApplied(report) => {
+                                    self.status = report.summary();
+                                    self.log(self.status.clone());
+                                    self.clear_preview();
+                                    self.invalidate_android();
+                                    self.batch_report = Some(report);
+                                    self.refresh_backup_list();
                                 }
                                 Reply::Network(r) => self.report = Some(r),
                                 Reply::Backups(b) => {
@@ -382,7 +447,11 @@ impl App {
     }
     fn preview_host(&mut self, ctx: &egui::Context, cloud: bool) {
         if let Some(snapshot) = self.snapshot.clone() {
-            let instance = self.instance.clone();
+            let instances = if cloud {
+                vec![self.instance.clone()]
+            } else {
+                self.instances.iter().cloned().collect()
+            };
             let options = if cloud {
                 HostOptions {
                     ads: false,
@@ -400,17 +469,25 @@ impl App {
                 ctx,
                 "Preparing exact changes and checking files…",
                 move |_| {
-                    Ok(Reply::Preview(engine::host_plan(
-                        &snapshot, &instance, &options,
+                    Ok(Reply::Preview(engine::host_plan_many(
+                        &snapshot, &instances, &options,
                     )?))
                 },
             );
         }
     }
     fn heading(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-        ui.heading(title);
-        ui.label(RichText::new(subtitle).color(MUTED));
-        ui.add_space(14.0);
+        let compact =
+            ui.ctx().content_rect().width() < 930.0 && ui.ctx().content_rect().height() < 340.0;
+        if compact {
+            // The compact navigation already names the page. Preserve room for
+            // instance selection and settings at 200% text in a short window.
+            ui.label(RichText::new(subtitle).small().color(MUTED));
+        } else {
+            ui.heading(title);
+            ui.label(RichText::new(subtitle).color(MUTED));
+        }
+        ui.add_space(if compact { 6.0 } else { 14.0 });
     }
     fn overview(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         Self::heading(
@@ -446,8 +523,8 @@ impl App {
             for (number, title, detail) in [
                 (
                     "01",
-                    "Choose an instance",
-                    "Select the Android instance at the top or in the sidebar.",
+                    "Choose your instances",
+                    "Check the instances to clean up in Debloat & tune. The picker here starts one instance.",
                 ),
                 (
                     "02",
@@ -456,8 +533,8 @@ impl App {
                 ),
                 (
                     "03",
-                    "Apply, then start BlueStacks",
-                    "Host changes close BlueStacks automatically. Android changes need it running.",
+                    "Apply the reviewed changes",
+                    "Host changes close BlueStacks. Android apps can start and close stopped instances one at a time.",
                 ),
             ] {
                 ui.horizontal_wrapped(|ui| {
@@ -516,81 +593,6 @@ impl App {
                 self.scan(ctx);
             }
         });
-    }
-    fn android(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        Self::heading(
-            ui,
-            "Android apps",
-            "Start the selected instance. Enable ADB in BlueStacks Settings > Advanced.",
-        );
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Scan Android apps").clicked()
-                && let Some(install) = self.install()
-            {
-                let name = self.instance.clone();
-                self.job(ctx, "Connecting to Android…", move |_| {
-                    Ok(Reply::Packages(engine::guest_scan(&install, &name)?.1))
-                });
-            }
-            if ui.button("Save Android screenshot").clicked()
-                && let Some(install) = self.install()
-            {
-                let name = self.instance.clone();
-                let dir = self.root.join("screenshots");
-                self.job(ctx, "Capturing Android screen…", move |_| {
-                    std::fs::create_dir_all(&dir)?;
-                    let path = dir.join(format!(
-                        "{name}-{}.png",
-                        chrono::Utc::now().format("%Y%m%d-%H%M%S")
-                    ));
-                    Client::connect(&install, &name)?.screenshot(&path)?;
-                    Ok(Reply::Done(format!("Screenshot saved: {}", path.display())))
-                });
-            }
-        });
-        ui.add_space(10.0);
-        if self.packages.is_empty() {
-            ui.label(
-                RichText::new(
-                    "Scan to find reviewed optional packages installed in this instance.",
-                )
-                .color(MUTED),
-            );
-        }
-        for p in &self.packages {
-            let mut selected = self.selected.contains(&p.name);
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(p.enabled <= 1, egui::Checkbox::new(&mut selected, &p.name))
-                    .changed()
-                {
-                    if selected {
-                        self.selected.insert(p.name.clone());
-                    } else {
-                        self.selected.remove(&p.name);
-                    }
-                    self.plan = None;
-                    self.applied = None;
-                }
-                if p.enabled > 1 {
-                    ui.label(RichText::new("already disabled").color(ACCENT));
-                }
-            });
-            ui.label(RichText::new(&p.reason).small().color(MUTED));
-        }
-        ui.add_space(8.0);
-        if ui
-            .checkbox(
-                &mut self.animations,
-                "Shorten Android UI animations to 0.5×",
-            )
-            .changed()
-        {
-            self.plan = None;
-            self.applied = None;
-        }
-        ui.label(RichText::new("Games, the launcher, Google Play, billing and accounts are excluded. Disabling keeps app data and can be undone.").color(MUTED));
-        self.preview_details(ui);
     }
     fn cloud(&mut self, ui: &mut egui::Ui) {
         Self::heading(
@@ -706,6 +708,7 @@ impl App {
         self.preview_details(ui);
     }
     fn preview_details(&mut self, ui: &mut egui::Ui) {
+        self.android_results(ui);
         if let Some(applied) = &self.applied
             && !applied.report.issues.is_empty()
         {
@@ -766,8 +769,8 @@ impl App {
     }
 }
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
-        self.render(ctx);
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        self.render(ui);
     }
 }
 pub fn run() -> Result<()> {

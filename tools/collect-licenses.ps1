@@ -7,6 +7,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not resolve dependency licenses.' }
 $metadata = $raw | ConvertFrom-Json
 $activeIds = @($metadata.resolve.nodes | ForEach-Object { $_.id })
 $fallbacks = @{
+    'accesskit' = @('accesskit-MIT.txt', 'accesskit-Apache.txt')
     'clipboard-win' = @('clipboard-win-BSL.txt')
     'ecolor' = @('egui-MIT.txt', 'egui-Apache.txt')
     'eframe' = @('egui-MIT.txt', 'egui-Apache.txt')

@@ -1,5 +1,5 @@
 use super::*;
-const TABS: &[(Tab, &str)] = &[
+pub(super) const TABS: &[(Tab, &str)] = &[
     (Tab::Overview, "Overview"),
     (Tab::Host, "Debloat & tune"),
     (Tab::Android, "Android apps"),
@@ -9,6 +9,31 @@ const TABS: &[(Tab, &str)] = &[
     (Tab::Backups, "Backups & restore"),
 ];
 impl App {
+    fn text_size_picker(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, compact: bool) {
+        egui::ComboBox::from_id_salt("text_size")
+            .selected_text(format!(
+                "{}{}%",
+                if compact { "" } else { "Text " },
+                (self.text_scale * 100.0).round()
+            ))
+            .width(if compact { 80.0 } else { 100.0 })
+            .show_ui(ui, |ui| {
+                for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+                    if ui
+                        .selectable_value(
+                            &mut self.text_scale,
+                            scale,
+                            format!("{}%", (scale * 100.0) as u32),
+                        )
+                        .changed()
+                    {
+                        ctx.set_zoom_factor(scale);
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Text size");
+    }
     fn choose_tab(&mut self, tab: Tab, ctx: &egui::Context) {
         if self.tab != tab {
             self.clear_preview();
@@ -43,13 +68,15 @@ impl App {
             });
         if old != self.instance {
             self.clear_preview();
-            self.packages.clear();
-            self.selected.clear();
+            // Single-instance tools do not change the independent Android scan
+            // and package choices for the multi-instance cleanup selection.
             self.root_info = None;
             self.root_status = None;
         }
     }
-    pub(super) fn render(&mut self, ctx: &egui::Context) {
+    pub(super) fn render(&mut self, ui: &mut egui::Ui) {
+        let context = ui.ctx().clone();
+        let ctx = &context;
         self.receive();
         if ctx.input(|i| i.viewport().close_requested()) && !self.busy {
             self.save_preferences();
@@ -69,9 +96,14 @@ impl App {
             }
         }
         let narrow = ctx.content_rect().width() < 930.0;
-        egui::TopBottomPanel::top("top").show(ctx, |ui| {
+        egui::Panel::top("top").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("B").size(26.0).strong().color(ACCENT));
+                ui.label(
+                    RichText::new("B")
+                        .size(if narrow { 22.0 } else { 26.0 })
+                        .strong()
+                        .color(ACCENT),
+                );
                 ui.label(
                     RichText::new("BlueStacks Debloat")
                         .size(if narrow { 18.0 } else { 21.0 })
@@ -83,7 +115,9 @@ impl App {
                         .color(MUTED),
                 );
                 if platform::is_admin() {
-                    ui.label(RichText::new("Administrator").small().color(ACCENT));
+                    if !narrow {
+                        ui.label(RichText::new("Administrator").small().color(ACCENT));
+                    }
                 } else if ui
                     .add_enabled(!self.busy, egui::Button::new("Restart as administrator"))
                     .clicked()
@@ -94,30 +128,16 @@ impl App {
                         Err(e) => self.error = Some(e.to_string()),
                     }
                 }
-                egui::ComboBox::from_id_salt("text_size")
-                    .selected_text(format!("Text {}%", (self.text_scale * 100.0).round()))
-                    .width(100.0)
-                    .show_ui(ui, |ui| {
-                        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
-                            if ui
-                                .selectable_value(
-                                    &mut self.text_scale,
-                                    scale,
-                                    format!("{}%", (scale * 100.0) as u32),
-                                )
-                                .changed()
-                            {
-                                ctx.set_zoom_factor(scale);
-                            }
-                        }
-                    });
+                if !narrow {
+                    self.text_size_picker(ui, ctx, false);
+                }
             });
             if narrow {
                 ui.add_enabled_ui(!self.busy, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         let mut next = self.tab;
                         egui::ComboBox::from_id_salt("compact_nav")
-                            .width(ui.available_width().min(160.0))
+                            .width(ui.available_width().min(120.0))
                             .selected_text(TABS.iter().find(|(t, _)| *t == self.tab).unwrap().1)
                             .show_ui(ui, |ui| {
                                 for &(tab, label) in TABS {
@@ -127,7 +147,14 @@ impl App {
                         if next != self.tab {
                             self.choose_tab(next, ctx);
                         }
-                        self.instance_picker(ui);
+                        self.text_size_picker(ui, ctx, true);
+                        if matches!(self.tab, Tab::Host | Tab::Android) {
+                            ui.label(
+                                RichText::new(format!("{} selected", self.instances.len())).small(),
+                            );
+                        } else {
+                            self.instance_picker(ui);
+                        }
                     });
                 });
             }
@@ -136,16 +163,16 @@ impl App {
         let workflow = self.has_review_actions();
         let mut review_action = None;
         if workflow {
-            egui::TopBottomPanel::bottom("review_actions")
+            egui::Panel::bottom("review_actions")
                 .frame(
                     egui::Frame::new()
                         .fill(Color32::from_rgb(25, 39, 44))
                         .inner_margin(10.0),
                 )
-                .show(ctx, |ui| review_action = self.action_bar(ui));
+                .show(ui, |ui| review_action = self.action_bar(ui));
         }
         if !workflow || ctx.content_rect().height() >= 420.0 {
-            egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            egui::Panel::bottom("status").show(ui, |ui| {
                 if !workflow {
                     ui.horizontal_wrapped(|ui| {
                         if self.busy {
@@ -171,10 +198,10 @@ impl App {
             });
         }
         if !narrow {
-            egui::SidePanel::left("navigation")
-                .exact_width(214.0)
+            egui::Panel::left("navigation")
+                .exact_size(214.0)
                 .resizable(false)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.add_enabled_ui(!self.busy, |ui| {
                             ui.add_space(12.0);
@@ -190,12 +217,27 @@ impl App {
                                 }
                             }
                             ui.add_space(20.0);
-                            ui.label(RichText::new("ANDROID INSTANCE").size(11.0).color(MUTED));
-                            self.instance_picker(ui);
-                            if let Some(i) = self
-                                .snapshot
-                                .as_ref()
-                                .and_then(|s| s.instances.iter().find(|i| i.name == self.instance))
+                            if matches!(self.tab, Tab::Host | Tab::Android) {
+                                ui.label(
+                                    RichText::new("DEBLOAT SELECTION").size(11.0).color(MUTED),
+                                );
+                                ui.strong(format!(
+                                    "{} selected",
+                                    Self::instance_count(self.instances.len())
+                                ));
+                                ui.label(
+                                    RichText::new("Choose instances on this page.")
+                                        .small()
+                                        .color(MUTED),
+                                );
+                            } else {
+                                ui.label(RichText::new("ANDROID INSTANCE").size(11.0).color(MUTED));
+                                self.instance_picker(ui);
+                            }
+                            if !matches!(self.tab, Tab::Host | Tab::Android)
+                                && let Some(i) = self.snapshot.as_ref().and_then(|s| {
+                                    s.instances.iter().find(|i| i.name == self.instance)
+                                })
                             {
                                 ui.label(
                                     RichText::new(format!("{} cores · {} MB", i.cpus, i.ram_mb))
@@ -215,9 +257,9 @@ impl App {
                     });
                 });
         }
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical()
-                .id_salt("page")
+                .id_salt(("page", self.tab))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.set_max_width(ui.available_width());

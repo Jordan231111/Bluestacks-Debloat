@@ -13,7 +13,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install nightly-2026-10-07 --profile minimal --component clippy --component rustfmt
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
       - name: Check, test and package
         shell: pwsh
         run: ./tools/build.ps1

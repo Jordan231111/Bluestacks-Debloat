@@ -13,6 +13,9 @@ Preview commands return the plan and any unavailable options. Apply returns one 
 .\BluestacksDebloat.exe --instance Pie64 host --remove-x --remove-services --apply
 .\BluestacksDebloat.exe --instance Pie64 packages
 .\BluestacksDebloat.exe --instance Pie64 guest --recommended --animations --apply
+.\BluestacksDebloat.exe --instances Pie64,Rvc64 host --high-fps
+.\BluestacksDebloat.exe --instances Pie64,Rvc64 guest --recommended --animations --start-offline --apply
+.\BluestacksDebloat.exe --all-instances host --maximum
 .\BluestacksDebloat.exe --instance Pie64 root-network --hosts --isolate-launcher --apply
 .\BluestacksDebloat.exe --instance Rvc64 root inspect
 .\BluestacksDebloat.exe --instance Rvc64 root install --apply
@@ -29,7 +32,13 @@ Preview commands return the plan and any unavailable options. Apply returns one 
 
 `--install` and `--conf` override discovery. Specify `--instance` for instance-specific commands when several instances exist.
 
-Completed recovery points are automatically limited to the newest three after changes. `cleanup-backups` runs that same fixed rule explicitly. `delete-backup 'C:\...\OPERATION'` permanently deletes one completed point; these two explicit cleanup commands do not use `--apply`. Unfinished and damaged recovery is reported and protected as described in the [runbook](RUNBOOK.md).
+For `host`, `packages` and `guest`, use `--instances NAME,NAME` or `--all-instances` to select a batch. These flags cannot be combined with `--instance`. Host changes share one recovery transaction and apply common PC options once. Android batches return an `instances` array with a separate result/error for each instance; one unavailable instance does not block the others. An applied batch with any failures exits nonzero.
+
+`guest --start-offline` boots stopped instances one at a time and closes only those players afterward. Already running instances remain open. Scanning saves exact package/settings values; Review uses that snapshot, and Apply verifies identity and stale values again. Without `--start-offline`, Android instances must already be running. Root, Network controls, Launch and Screenshot continue to require a single `--instance`.
+
+Explicit package names outside the reviewed candidate list are reported as skipped. A reviewed app absent on another selected Android version is left unchanged there.
+
+Completed recovery points are automatically limited to the newest three recovery actions after changes; every per-instance copy from one Android batch counts together. `cleanup-backups` runs that same fixed rule explicitly. `delete-backup 'C:\...\OPERATION'` permanently deletes one completed point; these two explicit cleanup commands do not use `--apply`. Unfinished and damaged recovery is reported and protected as described in the [runbook](RUNBOOK.md).
 
 `host --maximum` selects the host stage, including BlueStacks-only hosts filtering and a high FPS limit. It preserves CPU/RAM and never silently roots Android. Apply guest and root-network changes separately while the selected instance is running.
 

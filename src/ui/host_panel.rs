@@ -32,8 +32,9 @@ impl App {
                 .into();
     }
     fn host_primary(&mut self, ui: &mut egui::Ui) {
-        ui.strong("Debloat");
+        ui.strong("Shared PC & BlueStacks controls");
         ui.checkbox(&mut self.options.ads, "Disable BlueStacks ad controls");
+        ui.label(RichText::new("Shared ad flags affect all instances. Gameplay-ad preferences apply to checked instances.").small().color(MUTED));
         ui.checkbox(
             &mut self.options.telemetry,
             "Disable BlueStacks statistics reporting",
@@ -41,10 +42,6 @@ impl App {
         ui.checkbox(
             &mut self.options.smart_downloads,
             "Stop automatic game downloads",
-        );
-        ui.checkbox(
-            &mut self.options.quiet,
-            "Turn off this instance's notifications",
         );
         ui.checkbox(
             &mut self.options.cloud,
@@ -62,13 +59,20 @@ impl App {
         ui.label(RichText::new("Stops BlueStacks' online configuration refresh from resetting feature flags. Included in Maximum; reversible from Backups.").small().color(MUTED));
     }
     fn host_tuning(&mut self, ui: &mut egui::Ui) {
-        ui.strong("Performance & tools");
-        ui.checkbox(&mut self.options.gpu, "Prefer the high-performance GPU");
+        ui.strong("Selected instances");
+        ui.checkbox(&mut self.options.quiet, "Turn off notifications");
         ui.checkbox(
             &mut self.options.high_fps,
             "Enable up to 240 FPS and disable VSync",
         );
         ui.label(RichText::new("A higher limit can increase power use. Games and the display determine the frame rate you actually get.").small().color(MUTED));
+        ui.collapsing("Optional CPU / RAM changes (manual)",|ui|{
+            ui.label("Maximum keeps these allocations unchanged. Change this setting only if you want a different resource budget.");
+            egui::ComboBox::from_id_salt("performance").width(ui.available_width().min(300.0)).selected_text(match self.options.performance{Performance::Keep=>"Keep current CPU / RAM",Performance::Balanced=>"Balanced",Performance::Gaming=>"Gaming",Performance::LowMemory=>"Low memory"}).show_ui(ui,|ui|{for(value,label)in[(Performance::Keep,"Keep current CPU / RAM"),(Performance::Balanced,"Up to 4 cores / 4 GB"),(Performance::Gaming,"Up to 8 cores / 8 GB"),(Performance::LowMemory,"Up to 2 cores / 2 GB")]{ui.selectable_value(&mut self.options.performance,value,label);}});
+        });
+        ui.add_space(12.0);
+        ui.strong("Shared performance & tools");
+        ui.checkbox(&mut self.options.gpu, "Prefer the high-performance GPU");
         ui.checkbox(
             &mut self.options.enable_adb,
             "Enable local Android tools (ADB)",
@@ -82,10 +86,6 @@ impl App {
                 .small()
                 .color(MUTED),
         );
-        ui.collapsing("Optional CPU / RAM changes (manual)",|ui|{
-            ui.label("Maximum keeps these allocations unchanged. Change this setting only if you want a different resource budget.");
-            egui::ComboBox::from_id_salt("performance").width(ui.available_width().min(300.0)).selected_text(match self.options.performance{Performance::Keep=>"Keep current CPU / RAM",Performance::Balanced=>"Balanced",Performance::Gaming=>"Gaming",Performance::LowMemory=>"Low memory"}).show_ui(ui,|ui|{for(value,label)in[(Performance::Keep,"Keep current CPU / RAM"),(Performance::Balanced,"Up to 4 cores / 4 GB"),(Performance::Gaming,"Up to 8 cores / 8 GB"),(Performance::LowMemory,"Up to 2 cores / 2 GB")]{ui.selectable_value(&mut self.options.performance,value,label);}});
-        });
     }
     pub(super) fn host(&mut self, ui: &mut egui::Ui) {
         Self::heading(
@@ -93,6 +93,7 @@ impl App {
             "Debloat & tune",
             "Checkboxes select options. Use Review and Apply in the fixed bottom bar.",
         );
+        self.instance_selection(ui);
         ui.horizontal_wrapped(|ui| {
             if ui.button("Recommended").clicked() {
                 self.recommended();
