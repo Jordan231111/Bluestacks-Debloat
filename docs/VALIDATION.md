@@ -13,6 +13,7 @@ All direct dependencies were checked against the crates.io stable releases and u
 - **840 automated layouts** exercised all seven tabs at four window sizes, five text scales and normal/error/busy states with 40 instance rows. No layout panic, invalid clip rectangle or unintended worker operation occurred.
 - The native OpenGL window stayed responsive through **40 size changes**. A native UI fixture selected 12 instances, reviewed/applied 13 settings, reported zero further changes and restored the configuration byte-for-byte. Enlarged-text navigation was compacted to leave more room for content.
 - Native root system-file preparation and read-back verification passed on an **expendable copied 8 GiB system partition**, including the staged commit. The original master was not written. A complete live root-install/unroot cycle was not repeated; the original root-cycle evidence below still describes its tested scope.
+- Read-only root inspection passed for all four retained instances, including a clone whose system image is registered in its master machine. Root disk lookup now follows only current hardware image UUIDs through the shared machine registry. Regression cases reject unattached guesses and conflicting registrations, ignore snapshot-only images, and verify XML-escaped paths and shared-instance detection.
 
 Stress reports are under `.local/evidence/stress-20261104` and excluded from Git. Temporary Android instances, copied disks, fixture files and stress executables are removed after verification; concise result records remain for the audit trail.
 
@@ -41,7 +42,7 @@ Private evidence is in `.local/evidence/batch-review`, including per-instance sc
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --all-targets -- -D warnings`
-- `cargo test --locked --all-targets`: **93 tests** (92 library tests and one 840-layout UI stress test).
+- `cargo test --locked --all-targets`: **97 tests** (96 library tests and one 840-layout UI stress test).
 - Optimized Windows x64 build with a static MSVC CRT.
 - `cargo audit` (2026-11-04): **zero known Rust dependency vulnerabilities and zero warnings** after the complete dependency refresh. This audit does not cover the separate embedded root helper binaries.
 

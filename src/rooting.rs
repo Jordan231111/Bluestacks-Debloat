@@ -97,22 +97,83 @@ impl Drop for CompanionLock {
 
 fn disk_from_xml(bstk: &Path, filename: &str) -> Result<PathBuf> {
     let text = fs::read_to_string(bstk)?;
-    let re = regex::Regex::new(r#"\blocation="([^"]+)""#)?;
-    let mut found: Vec<PathBuf> = Vec::new();
-    for c in re.captures_iter(&text) {
-        let value = c[1]
-            .replace("&amp;", "&")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace('/', "\\");
-        let p = PathBuf::from(value);
-        if p.file_name()
-            .is_some_and(|n| n.eq_ignore_ascii_case(filename))
+    let machine = roxmltree::Document::parse(&text).context("Parse BlueStacks machine XML")?;
+    let current = machine
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "Machine")
+        .context("Machine XML has no Machine element")?;
+    let hardware = current
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == "Hardware")
+        .context("Machine XML has no current Hardware section")?;
+    let attached = hardware
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Image")
+        .filter_map(|node| node.attribute("uuid"))
+        .map(uuid::Uuid::parse_str)
+        .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+    ensure!(
+        !attached.is_empty(),
+        "Machine has no attached disk UUIDs: {}",
+        bstk.display()
+    );
+    let mut sources = vec![bstk.to_owned()];
+    // Clones may declare only their private Data.vhdx locally. Their attached
+    // system UUID is registered in a master machine named by BstkGlobal.xml.
+    let global = bstk
+        .parent()
+        .and_then(Path::parent)
+        .context("Machine has no Engine folder")?
+        .join("Manager/BstkGlobal.xml");
+    if global.is_file() {
+        let registry_text = fs::read_to_string(&global)?;
+        let registry = roxmltree::Document::parse(&registry_text)
+            .context("Parse BlueStacks shared disk registry")?;
+        sources.push(global.clone());
+        for node in registry
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().name() == "MachineEntry")
         {
+            if let Some(source) = node.attribute("src") {
+                let source = PathBuf::from(source.replace('/', "\\"));
+                let source = if source.is_absolute() {
+                    source
+                } else {
+                    global.parent().unwrap().join(source)
+                };
+                if source.is_file() && !sources.iter().any(|p| platform::same_path(p, &source)) {
+                    sources.push(source);
+                }
+            }
+        }
+    }
+    let mut found: Vec<PathBuf> = Vec::new();
+    for source in sources {
+        let text = fs::read_to_string(&source)?;
+        let document = roxmltree::Document::parse(&text)
+            .with_context(|| format!("Parse disk registration in {}", source.display()))?;
+        for node in document
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().name() == "HardDisk")
+        {
+            let (Some(id), Some(location)) = (node.attribute("uuid"), node.attribute("location"))
+            else {
+                continue;
+            };
+            if !attached.contains(&uuid::Uuid::parse_str(id)?) {
+                continue;
+            }
+            let p = PathBuf::from(location.replace('/', "\\"));
+            if !p
+                .file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case(filename))
+            {
+                continue;
+            }
             let path = if p.is_absolute() {
                 p
             } else {
-                bstk.parent().context("Machine file parent")?.join(p)
+                source.parent().context("Machine registry parent")?.join(p)
             };
             if path.is_file() {
                 let path = platform::absolute(&path)?;
@@ -124,7 +185,7 @@ fn disk_from_xml(bstk: &Path, filename: &str) -> Result<PathBuf> {
     }
     ensure!(
         found.len() == 1,
-        "Expected one existing {filename} in {}",
+        "Expected one attached, registered and existing {filename} for {}",
         bstk.display()
     );
     Ok(found.remove(0))
@@ -992,6 +1053,93 @@ pub fn restore_backup(path: &Path, state: &Path, mut log: impl FnMut(String)) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn registered_clone() -> (tempfile::TempDir, Installation, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let install = Installation {
+            install_dir: temp.path().join("program"),
+            data_dir: temp.path().join("data & shared"),
+            version: "fixture".into(),
+            source: "fixture".into(),
+        };
+        fs::create_dir_all(&install.install_dir).unwrap();
+        for file in ["HD-Player.exe", "HD-Adb.exe"] {
+            fs::write(install.install_dir.join(file), b"fixture").unwrap();
+        }
+        let master = install.data_dir.join("Engine/Tiramisu64");
+        let clone = install.data_dir.join("Engine/Tiramisu64_14");
+        let manager = install.data_dir.join("Engine/Manager");
+        for dir in [&master, &clone, &manager] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(master.join("Root.vhd"), b"system").unwrap();
+        fs::write(master.join("Data.vhdx"), b"master data").unwrap();
+        fs::write(clone.join("Data.vhdx"), b"private clone data").unwrap();
+        let header = r#"<VirtualBox xmlns="http://www.virtualbox.org/"><Machine>"#;
+        let footer = "</Machine></VirtualBox>";
+        fs::write(master.join("Tiramisu64.bstk"), format!("{header}<MediaRegistry><HardDisks><HardDisk uuid=\"11111111-1111-4111-8111-111111111111\" location=\"Root.vhd\"/><HardDisk uuid=\"22222222-2222-4222-8222-222222222222\" location=\"Data.vhdx\"/></HardDisks></MediaRegistry><Hardware><StorageControllers><Image uuid=\"11111111-1111-4111-8111-111111111111\"/><Image uuid=\"22222222-2222-4222-8222-222222222222\"/></StorageControllers></Hardware>{footer}")).unwrap();
+        fs::write(clone.join("Tiramisu64_14.bstk"), format!("{header}<MediaRegistry><HardDisks><HardDisk uuid=\"33333333-3333-4333-8333-333333333333\" location=\"Data.vhdx\"/></HardDisks></MediaRegistry><Hardware><StorageControllers><Image uuid=\"11111111-1111-4111-8111-111111111111\"/><Image uuid=\"33333333-3333-4333-8333-333333333333\"/></StorageControllers></Hardware>{footer}")).unwrap();
+        let master_xml = master
+            .join("Tiramisu64.bstk")
+            .to_string_lossy()
+            .replace('&', "&amp;");
+        let registry = manager.join("BstkGlobal.xml");
+        fs::write(&registry, format!("<VirtualBox><Global><MachineRegistry><MachineEntry src=\"{master_xml}\"/></MachineRegistry></Global></VirtualBox>")).unwrap();
+        fs::write(install.conf(), "bst.instance.Tiramisu64.display_name=\"Master\"\nbst.instance.Tiramisu64_14.display_name=\"Clone\"\n").unwrap();
+        (temp, install, registry)
+    }
+    #[test]
+    fn root_clone_resolves_the_attached_master_uuid_and_keeps_private_data() {
+        let (_temp, install, _) = registered_clone();
+        let info = info(&install, "Tiramisu64_14").unwrap();
+        assert!(platform::same_path(
+            &info.system_disk,
+            &platform::absolute(&install.data_dir.join("Engine/Tiramisu64/Root.vhd")).unwrap()
+        ));
+        assert!(platform::same_path(
+            &info.data_disk,
+            &platform::absolute(&install.data_dir.join("Engine/Tiramisu64_14/Data.vhdx")).unwrap()
+        ));
+        assert_eq!(info.shared_instances, vec!["Tiramisu64", "Tiramisu64_14"]);
+        assert!(info.master_file.is_some());
+    }
+    #[test]
+    fn root_clone_does_not_guess_an_unattached_root_disk() {
+        let (_temp, install, _) = registered_clone();
+        let machine = install
+            .data_dir
+            .join("Engine/Tiramisu64_14/Tiramisu64_14.bstk");
+        let text = fs::read_to_string(&machine).unwrap().replace(
+            "11111111-1111-4111-8111-111111111111",
+            "44444444-4444-4444-8444-444444444444",
+        );
+        fs::write(machine, text).unwrap();
+        assert!(info(&install, "Tiramisu64_14").is_err());
+    }
+    #[test]
+    fn snapshot_disk_references_do_not_override_current_hardware() {
+        let (_temp, install, registry) = registered_clone();
+        let other = install.data_dir.join("other");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("Root.vhd"), b"snapshot system").unwrap();
+        let machine = install
+            .data_dir
+            .join("Engine/Tiramisu64_14/Tiramisu64_14.bstk");
+        let text = fs::read_to_string(&machine).unwrap().replace("</Machine>","<Snapshot><Hardware><StorageControllers><Image uuid=\"44444444-4444-4444-8444-444444444444\"/></StorageControllers></Hardware></Snapshot></Machine>");
+        fs::write(machine, text).unwrap();
+        let text = fs::read_to_string(&registry).unwrap().replace("</Global>","<HardDisk uuid=\"44444444-4444-4444-8444-444444444444\" location=\"../../other/Root.vhd\"/></Global>");
+        fs::write(registry, text).unwrap();
+        assert!(info(&install, "Tiramisu64_14").is_ok());
+    }
+    #[test]
+    fn conflicting_registrations_for_an_attached_uuid_are_rejected() {
+        let (_temp, install, registry) = registered_clone();
+        let other = install.data_dir.join("other");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("Root.vhd"), b"different system").unwrap();
+        let text = fs::read_to_string(&registry).unwrap().replace("</Global>","<HardDisk uuid=\"11111111-1111-4111-8111-111111111111\" location=\"../../other/Root.vhd\"/></Global>");
+        fs::write(registry, text).unwrap();
+        assert!(info(&install, "Tiramisu64_14").is_err());
+    }
 
     #[test]
     fn config_recovery_rejects_corruption_and_preserves_live_ports() {

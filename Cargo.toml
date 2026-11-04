@@ -14,6 +14,7 @@ clap = { version = "4.6", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "clipboard", "links"] }
 regex = "1"
+roxmltree = "0.21.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
