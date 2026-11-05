@@ -77,13 +77,18 @@ pub fn valid_package(s: &str) -> bool {
 }
 fn transport_failure(error: &anyhow::Error) -> bool {
     let message = format!("{error:#}").to_ascii_lowercase();
+    // An acknowledged remote failure is not a broken transport, even if the
+    // command's own diagnostic contains words such as "not found" or "timeout".
+    if message.contains("android command failed (") {
+        return false;
+    }
     [
         "protocol fault",
         "connection reset",
         "broken pipe",
         "no completion status",
         "device offline",
-        "not found",
+        "no devices/emulators found",
         "error: closed",
         "timed out",
         "private adb server exited",
@@ -92,6 +97,30 @@ fn transport_failure(error: &anyhow::Error) -> bool {
     ]
     .iter()
     .any(|part| message.contains(part))
+        || (message.contains("error: device") && message.contains("not found"))
+}
+
+fn retry_transport<T>(
+    mut command: impl FnMut() -> Result<T>,
+    mut reconnect: impl FnMut() -> Result<()>,
+) -> Result<T> {
+    for attempt in 0..4 {
+        match command() {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt < 3 && transport_failure(&error) => {
+                // The replacement daemon can itself briefly lose its status
+                // channel. Keep that failure within the same bounded retry
+                // budget; ownership/identity refusals must still stop at once.
+                if let Err(recovery) = reconnect()
+                    && !transport_failure(&recovery)
+                {
+                    return Err(recovery);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!()
 }
 
 impl Client {
@@ -208,23 +237,21 @@ impl Client {
     }
     /// Only callers with an idempotent command should opt into transport retries.
     pub fn idempotent_shell(&self, cmd: &str) -> Result<String> {
-        let mut last = None;
-        for attempt in 0..4 {
-            match self.shell(cmd) {
-                Ok(s) => return Ok(s),
-                Err(e) => {
-                    if !transport_failure(&e) {
-                        return Err(e);
-                    }
-                    last = Some(e);
-                    if attempt < 3 {
-                        std::thread::sleep(Duration::from_millis(300));
-                        self.reconnect_transport()?;
-                    }
+        self.retry_shell(cmd, false)
+    }
+    fn retry_shell(&self, cmd: &str, verify_identity: bool) -> Result<String> {
+        retry_transport(
+            || {
+                if verify_identity {
+                    self.verify_identity()?;
                 }
-            }
-        }
-        Err(last.unwrap())
+                self.shell(cmd)
+            },
+            || {
+                std::thread::sleep(Duration::from_millis(300));
+                self.reconnect_transport()
+            },
+        )
     }
     pub fn push_file(&self, source: &Path, target: &str) -> Result<()> {
         ensure!(
@@ -286,6 +313,10 @@ impl Client {
     }
     pub fn root(&self, script: &str) -> Result<String> {
         self.shell(&format!("su -c {}", quote(script)))
+    }
+    /// Read-only or explicitly idempotent root commands may recover their transport.
+    pub fn idempotent_root(&self, script: &str) -> Result<String> {
+        self.idempotent_shell(&format!("su -c {}", quote(script)))
     }
     pub fn verify_identity(&self) -> Result<()> {
         let identity = self.idempotent_shell("settings get secure android_id")?;
@@ -541,7 +572,6 @@ impl Client {
         Ok(value)
     }
     pub fn set_package_state(&self, name: &str, state: u8) -> Result<()> {
-        self.verify_identity()?;
         ensure!(valid_package(name), "Invalid package");
         let action = match state {
             0 => "default-state",
@@ -551,7 +581,9 @@ impl Client {
             4 => "disable-until-used",
             _ => bail!("Invalid package state"),
         };
-        self.shell(&format!("pm {action} --user 0 {}", quote(name)))?;
+        // Setting an exact state is safe to replay if ADB loses its response.
+        // Recheck Android identity before every attempt, then read back the state.
+        self.retry_shell(&format!("pm {action} --user 0 {}", quote(name)), true)?;
         ensure!(
             self.package_state(name)? == state,
             "Package state verification failed for {name}"
@@ -586,12 +618,11 @@ impl Client {
         })
     }
     pub fn set_setting(&self, name: &str, value: Option<&str>) -> Result<()> {
-        self.verify_identity()?;
         ensure!(ANIMATIONS.contains(&name), "Unsupported Android setting");
         if let Some(v) = value {
-            self.shell(&format!("settings put global {name} {}", quote(v)))?;
+            self.retry_shell(&format!("settings put global {name} {}", quote(v)), true)?;
         } else {
-            self.shell(&format!("settings delete global {name}"))?;
+            self.retry_shell(&format!("settings delete global {name}"), true)?;
         }
         ensure!(
             self.setting(name)?.as_deref() == value,
@@ -649,6 +680,100 @@ pub const ANIMATIONS: &[&str] = &[
 mod tests {
     use super::*;
     #[test]
+    fn idempotent_write_recovers_when_the_acknowledgement_is_lost() {
+        let mut state = 0;
+        let mut attempts = 0;
+        let mut reconnects = 0;
+        retry_transport(
+            || {
+                attempts += 1;
+                state = 3;
+                if attempts == 1 {
+                    bail!("ADB shell returned no completion status");
+                }
+                Ok(())
+            },
+            || {
+                reconnects += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!((state, attempts, reconnects), (3, 2, 1));
+    }
+    #[test]
+    fn retries_stop_on_identity_or_permission_errors() {
+        for message in ["Android identity changed", "Permission denied"] {
+            let mut attempts = 0;
+            let error = retry_transport::<()>(
+                || {
+                    attempts += 1;
+                    bail!("{message}")
+                },
+                || panic!("A rejected operation must not reconnect"),
+            )
+            .unwrap_err();
+            assert_eq!(attempts, 1);
+            assert_eq!(error.to_string(), message);
+        }
+    }
+    #[test]
+    fn retries_are_bounded_and_refuse_changed_listener_ownership() {
+        let mut attempts = 0;
+        let mut reconnects = 0;
+        assert!(
+            retry_transport::<()>(
+                || {
+                    attempts += 1;
+                    bail!("Connection reset by peer")
+                },
+                || {
+                    reconnects += 1;
+                    Ok(())
+                },
+            )
+            .is_err()
+        );
+        assert_eq!((attempts, reconnects), (4, 3));
+        attempts = 0;
+        let error = retry_transport::<()>(
+            || {
+                attempts += 1;
+                bail!("Connection reset by peer")
+            },
+            || bail!("ADB listener ownership changed"),
+        )
+        .unwrap_err();
+        assert_eq!(attempts, 1);
+        assert!(error.to_string().contains("ownership changed"));
+    }
+    #[test]
+    fn transient_reconnect_failure_does_not_abort_an_idempotent_write() {
+        let connected = std::cell::Cell::new(false);
+        let mut attempts = 0;
+        let mut reconnects = 0;
+        retry_transport(
+            || {
+                attempts += 1;
+                ensure!(
+                    connected.get(),
+                    "Private ADB server exited before the command"
+                );
+                Ok(())
+            },
+            || {
+                reconnects += 1;
+                if reconnects == 1 {
+                    bail!("error: protocol fault (couldn't read status length): No error");
+                }
+                connected.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!((attempts, reconnects), (3, 2));
+    }
+    #[test]
     fn transport_retries_are_limited_to_connection_failures() {
         assert!(transport_failure(&anyhow::anyhow!(
             "error: protocol fault (couldn't read status length): No error"
@@ -660,6 +785,16 @@ mod tests {
         assert!(!transport_failure(&anyhow::anyhow!(
             "Android identity changed"
         )));
+        assert!(transport_failure(&anyhow::anyhow!(
+            "error: device '127.0.0.1:5555' not found"
+        )));
+        for diagnostic in [
+            "Android command failed (127): su: inaccessible or not found",
+            "Android command failed (1): connection timed out",
+            "Package not found",
+        ] {
+            assert!(!transport_failure(&anyhow::anyhow!("{diagnostic}")));
+        }
     }
     #[test]
     fn package_validation_blocks_shell_injection() {

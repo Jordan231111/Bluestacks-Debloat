@@ -35,6 +35,7 @@ impl App {
         ui.strong("Shared PC & BlueStacks controls");
         ui.checkbox(&mut self.options.ads, "Disable BlueStacks ad controls");
         ui.label(RichText::new("Shared ad flags affect all instances. Gameplay-ad preferences apply to checked instances.").small().color(MUTED));
+        ui.label(RichText::new("The home screen's 'Popular games to play' row uses the launcher. See Network for launcher isolation (Magisk required).").small().color(MUTED));
         ui.checkbox(
             &mut self.options.telemetry,
             "Disable BlueStacks statistics reporting",

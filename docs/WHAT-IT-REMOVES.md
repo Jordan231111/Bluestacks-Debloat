@@ -6,6 +6,8 @@ The executable's rule lists are in `src/rules.rs` (host settings), `src/adb.rs` 
 
 Disable known gameplay/boot ad controls, programmatic ad features, ad/statistics event controls and Smart Downloads. Only existing settings with recognized values are edited. The tool preserves config ordering, quotes, whitespace, line endings and unrelated content, and refuses duplicate keys.
 
+The home screen's **Popular games to play** tiles belong to the Android launcher. These host flags do not remove that row. Use **Network → Block the BlueStacks launcher's Internet access**, with working Magisk in the selected instance, and restart Android. On 5.22.288.1014 / Android 13, the tiles disappeared after isolation and stayed absent through two restarts; the empty heading and background remained. Other versions may retain cached tiles.
+
 Optional cloud choices disable X integration, cloud-instance UI, nowBux/rewards, cloud recording uploads, AI integrations and related known flags. Notification and performance settings apply to the chosen instance; global flags affect all instances.
 
 Optional manual CPU/RAM presets reserve host resources, offering up to 4 cores/4 GiB for Balanced, 8 cores/8 GiB for Gaming, or 2 cores/2 GiB for Low Memory. **Maximum keeps existing CPU and RAM allocations.** Its independent high-FPS choice sets a 240 FPS limit, enables high-frame-rate mode and disables emulator VSync; achievable FPS remains game/hardware-dependent. The renderer and resolution stay as configured.

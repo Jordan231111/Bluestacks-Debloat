@@ -37,6 +37,7 @@ impl App {
     fn choose_tab(&mut self, tab: Tab, ctx: &egui::Context) {
         if self.tab != tab {
             self.clear_preview();
+            self.error = None;
         }
         self.tab = tab;
         if tab == Tab::Backups {
@@ -68,6 +69,7 @@ impl App {
             });
         if old != self.instance {
             self.clear_preview();
+            self.error = None;
             // Single-instance tools do not change the independent Android scan
             // and package choices for the multi-instance cleanup selection.
             self.root_info = None;

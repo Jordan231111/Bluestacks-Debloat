@@ -62,6 +62,7 @@ enum Reply {
 }
 enum Event {
     Log(String),
+    Refreshed(Snapshot),
     Finished(Box<std::result::Result<Reply, String>>),
 }
 struct App {
@@ -220,6 +221,7 @@ impl App {
         self.status = label.into();
         let tx = self.tx.clone();
         let ctx = ctx.clone();
+        let install = self.install();
         std::thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(tx.clone())));
             let result = match result {
@@ -229,6 +231,14 @@ impl App {
                         .into(),
                 ),
             };
+            // A queue, host apply or root operation can start/stop players and
+            // change allocations. Refresh off the UI thread, keeping the result
+            // and reviewed selections intact when the snapshot is received.
+            if let Some(install) = install
+                && let Ok(snapshot) = discovery::snapshot(install)
+            {
+                let _ = tx.send(Event::Refreshed(snapshot));
+            }
             let _ = tx.send(Event::Finished(Box::new(result)));
             ctx.request_repaint();
         });
@@ -254,6 +264,7 @@ impl App {
     fn receive(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
+                Event::Refreshed(snapshot) => self.snapshot = Some(snapshot),
                 Event::Log(s) => {
                     if s.starts_with(backup_cleanup::WARNING_PREFIX) {
                         self.backup_warning = Some(s.clone());
@@ -274,7 +285,16 @@ impl App {
                                     if !s.instances.iter().any(|i| i.name == self.instance) {
                                         self.instance = s
                                             .instances
-                                            .first()
+                                            .iter()
+                                            .find(|i| self.instances.contains(&i.name))
+                                            .or_else(|| {
+                                                s.instances.iter().find(|i| {
+                                                    s.processes.iter().any(|p| {
+                                                        p.instance.as_ref() == Some(&i.name)
+                                                    })
+                                                })
+                                            })
+                                            .or_else(|| s.instances.first())
                                             .map(|i| i.name.clone())
                                             .unwrap_or_default();
                                     }
@@ -327,7 +347,6 @@ impl App {
                                     self.status = report.summary();
                                     self.log(self.status.clone());
                                     self.plan = None;
-                                    self.applied = None;
                                     self.applied = Some(action_bar::AppliedChanges {
                                         report,
                                         time: chrono::Local::now().format("%H:%M").to_string(),
@@ -704,7 +723,7 @@ impl App {
             self.plan = None;
             self.applied = None;
         }
-        ui.label(RichText::new("Launcher isolation stops its online recommendations, search and store functions. Games and Google Play keep their own network access. Restart Android to refresh the launcher. Hosts filtering takes effect after an Android restart; restore also needs a restart to remove that overlay.").color(MUTED));
+        ui.label(RichText::new("Launcher isolation blocks new online recommendations, including the home screen's 'Popular games to play' row, and the launcher's search and store connections. Cached tiles may remain visible. Games and Google Play keep their own network access. Restart Android to refresh the launcher and activate hosts filtering; removing the hosts overlay also requires a restart.").color(MUTED));
         self.preview_details(ui);
     }
     fn preview_details(&mut self, ui: &mut egui::Ui) {

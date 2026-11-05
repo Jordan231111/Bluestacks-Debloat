@@ -4,7 +4,7 @@ use crate::{
     network,
     transaction::{Operation, Target, Value},
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 pub const MODULE: &str = "/data/adb/modules/bluestacks_debloat";
 const PROP: &str = "id=bluestacks_debloat\nname=BlueStacks Debloat\nversion=1.0\nversionCode=1\nauthor=BlueStacks Debloat\ndescription=Optional hosts filtering and launcher-only network isolation\n";
@@ -17,17 +17,19 @@ struct Policy {
 }
 fn require_root(adb: &Client) -> Result<()> {
     ensure!(
-        adb.root("id -u")?.trim() == "0",
-        "This option requires working Magisk root"
+        adb.idempotent_root("id -u")
+            .context("Launcher isolation and Android hosts filtering require working Magisk root in the selected instance. Open Root BlueStacks to install or check it")?
+            .trim() == "0",
+        "This option requires working Magisk root in the selected instance. Open Root BlueStacks to install or check it"
     );
     ensure!(
-        !adb.root("magisk -v")?.trim().is_empty(),
+        !adb.idempotent_root("magisk -v")?.trim().is_empty(),
         "Magisk is required to keep these changes across reboots"
     );
     Ok(())
 }
 fn launcher_uid(adb: &Client) -> Result<u32> {
-    let dump = adb.shell("dumpsys package com.uncube.launcher3")?;
+    let dump = adb.idempotent_shell("dumpsys package com.uncube.launcher3")?;
     let re = regex::Regex::new(r"(?m)^\s*userId=(\d+)\s*$")?;
     let uid = re
         .captures(&dump)
@@ -37,7 +39,7 @@ fn launcher_uid(adb: &Client) -> Result<u32> {
         uid >= 10000,
         "Refusing to filter a privileged/shared system UID"
     );
-    let list = adb.shell("pm list packages -U --user 0")?;
+    let list = adb.idempotent_shell("pm list packages -U --user 0")?;
     ensure!(
         list.lines()
             .filter(|line| line.trim().ends_with(&format!(" uid:{uid}")))
@@ -76,7 +78,7 @@ done
 }
 pub fn read(adb: &Client) -> Result<Value> {
     require_root(adb)?;
-    let json = adb.root(&format!(
+    let json = adb.idempotent_root(&format!(
         "if [ -d {MODULE} ]; then cat {MODULE}/policy.json; else printf 'ABSENT'; fi"
     ))?;
     if json == "ABSENT" {
@@ -85,16 +87,20 @@ pub fn read(adb: &Client) -> Result<Value> {
     let policy: Policy = serde_json::from_str(&json)?;
     ensure!(policy.version == 1, "Unsupported managed module version");
     ensure!(
-        adb.root(&format!("cat {MODULE}/module.prop"))?.trim_end() == PROP.trim_end(),
+        adb.idempotent_root(&format!("cat {MODULE}/module.prop"))?
+            .trim_end()
+            == PROP.trim_end(),
         "Existing module is not owned by this version of BlueStacks Debloat"
     );
     ensure!(
-        adb.root(&format!("cat {MODULE}/service.sh"))?.trim_end() == service(&policy).trim_end(),
+        adb.idempotent_root(&format!("cat {MODULE}/service.sh"))?
+            .trim_end()
+            == service(&policy).trim_end(),
         "Managed network script was modified; preserving it"
     );
     if let Some(hosts) = &policy.hosts {
         ensure!(
-            adb.root(&format!("cat {MODULE}/system/etc/hosts"))?
+            adb.idempotent_root(&format!("cat {MODULE}/system/etc/hosts"))?
                 .trim_end()
                 == hosts.trim_end(),
             "Managed hosts file was modified; preserving it"
@@ -140,10 +146,10 @@ pub fn write(adb: &Client, value: &Value) -> Result<()> {
             }
             adb.root(&script)?;
             if policy.isolate_launcher {
-                adb.root(&format!("sh {MODULE}/service.sh"))?;
+                adb.idempotent_root(&format!("sh {MODULE}/service.sh"))?;
                 let uid = launcher_uid(adb)?;
                 for tool in ["iptables", "ip6tables"] {
-                    adb.root(&format!("{tool} -w 3 -C OUTPUT -j {CHAIN} && {tool} -w 3 -C {CHAIN} -m owner --uid-owner {uid} -j REJECT"))?;
+                    adb.idempotent_root(&format!("{tool} -w 3 -C OUTPUT -j {CHAIN} && {tool} -w 3 -C {CHAIN} -m owner --uid-owner {uid} -j REJECT"))?;
                 }
                 // Reboot after applying to refresh the launcher and activate hosts.
                 // Some vendor builds reset the ADB transport when their launcher is
@@ -163,12 +169,12 @@ pub fn operation(adb: &Client, hosts: bool, isolate: bool) -> Result<Option<Oper
         launcher_uid(adb)?;
         for tool in ["iptables", "ip6tables"] {
             if before == Value::Missing {
-                adb.root(&format!("set -e; {tool} -w 3 -S OUTPUT >/dev/null; if {tool} -w 3 -S {CHAIN} >/dev/null 2>&1; then exit 1; fi"))?;
+                adb.idempotent_root(&format!("set -e; {tool} -w 3 -S OUTPUT >/dev/null; if {tool} -w 3 -S {CHAIN} >/dev/null 2>&1; then exit 1; fi"))?;
             }
         }
     }
     let hosts = if hosts {
-        let current = adb.shell("cat /system/etc/hosts")?;
+        let current = adb.idempotent_shell("cat /system/etc/hosts")?;
         Some(String::from_utf8(network::hosts_block(
             format!("{current}\n").as_bytes(),
             network::DOMAINS,

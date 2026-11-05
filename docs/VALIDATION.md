@@ -1,5 +1,20 @@
 # Validation record
 
+## 1.1.1 Android 13 live verification — 2026-11-05
+
+This run used **BlueStacks 5.22.288.1014**, launcher **10.42.288.1001**, and the installed **Tiramisu64 / Android 13** instance. Successful changes were left applied, as requested; no restore/unroot cycle was performed in this run.
+
+- The original UI applied Maximum's two remaining host changes and all four Android changes (disable `com.android.traceur` and set the three animation scales to `0.5`). Host ad flags and cloud cleanup were already configured, and the home-screen recommendation tiles remained until launcher isolation.
+- A fresh root operation completed all six stages and verified Kitsune Magisk 31 with the temporary bootstrap removed.
+- The original Network Apply reproduced a legacy HD-Adb protocol reset during a read-only root check. The updated build applied both Android hosts filtering and launcher isolation through the native UI successfully. Earlier activity logs showed the same transport faults during package/settings writes; those exact idempotent writes now use bounded retries with identity checks and read-back verification.
+- **Two full stop/start cycles** independently reported zero host changes, zero Android changes, and no network-policy update needed. Magisk, the Android hosts overlay and both IPv4/IPv6 owner rules remained active. The selected instance kept 4 CPU cores and 8192 MiB RAM, high-FPS mode at 240 and VSync disabled. The game-ad tiles were absent after both restarts; the empty “Popular games to play” heading remained.
+- Settings, Google Play and Chrome launched with Android's `Status: ok`. Screenshots showed the Play sign-in page and Chrome first-run page. Account sign-in, downloads and games were outside this check.
+- The rolled-back, unsuccessful Network recovery point was deleted; current root/network recovery remains available. Automatic retention removed superseded recovery points. Current original system/player copies used for root recovery were retained.
+- The updated code passed formatting, Clippy with warnings denied and **103 tests**, including retry/ownership regressions, instance fallback, runtime UI refresh and 840 layout combinations.
+- Fault injection terminated only the probe's private ADB daemon during a package write, an animation write and a root-network check. All three operations recovered and verified their original target values. A dependency audit reported zero known Rust dependency vulnerabilities and zero warnings.
+
+Private logs, before/after screenshots and both restart inspections are under `.local/evidence/e2e-20261105` (excluded from Git). Earlier multi-version and restore validation below remains historical evidence, not a claim that every older Android variant or restore path was rerun for 1.1.1.
+
 Local validation was performed on Windows 10 IoT Enterprise LTSC x64, BlueStacks **5.22.265.1013**. Version 1.1.0 adds disposable **Nougat32, Nougat64, Pie64, Rvc64 and Tiramisu64** tests to the original three-version validation below. The final build pins stable Rust **1.99.1**, edition 2024. This is a local validation record, not a claim of compatibility with every BlueStacks release or game.
 
 ## Updated toolchain and stress verification — 2026-11-04

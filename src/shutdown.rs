@@ -285,7 +285,7 @@ pub fn stop_with_cloud(
             && process.name.eq_ignore_ascii_case("HD-Player.exe")
             && let Some(instance) = &process.instance
             && let Ok(adb) = Client::connect(install, instance)
-            && adb.shell("sync").is_ok()
+            && adb.idempotent_shell("sync").is_ok()
         {
             log(format!("Synced Android writes: {instance}"));
         }
