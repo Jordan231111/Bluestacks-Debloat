@@ -6,6 +6,7 @@
 - Recover transient ADB failures during root-network checks and firewall activation. Confirmed Android command failures and permission errors are not retried as transport faults.
 - Refresh instance status and allocations after background operations, clear obsolete errors when changing tools or instances, and prefer a selected or running instance when a saved target was deleted.
 - Explain which Network option handles the home screen's “Popular games to play” tiles and show actionable guidance when Magisk is missing.
+- Label the Root tab's disk-size figure as an estimate for a new backup, rather than implying that recovery copies already occupy that space.
 - Validate Maximum, Android apps, a fresh Magisk installation, and both network controls on BlueStacks 5.22.288.1014 / Android 13 across two full player restarts. Changes remain applied; the ad tiles disappear while the empty heading remains.
 
 ## 1.1.0 — 2026-11-03

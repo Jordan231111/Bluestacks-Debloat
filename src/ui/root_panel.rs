@@ -36,10 +36,12 @@ impl App {
                             .size(18.0)
                             .strong(),
                     );
+                    ui.label("Kitsune Mask 31");
                     ui.label(format!(
-                        "Kitsune Mask 31 · Recovery copies ~{:.1} GiB",
+                        "Estimated new backup size: ~{:.1} GiB",
                         info.backup_bytes as f64 / 1073741824.0
                     ));
+                    ui.label(RichText::new("Estimate for a future root operation. View and delete saved recovery points in Backups & restore.").small().color(MUTED));
                     if let Some(report) = &self.root_status {
                         let label = if report.root && report.complete {
                             "Magisk root verified"
