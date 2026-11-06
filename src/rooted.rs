@@ -1,4 +1,4 @@
-//! Optional per-instance Magisk module. No system remount or shared VHD edits.
+//! Optional per-instance root module. No system remount or shared VHD edits.
 use crate::{
     adb::{Client, quote},
     network,
@@ -15,18 +15,59 @@ struct Policy {
     hosts: Option<String>,
     isolate_launcher: bool,
 }
-fn require_root(adb: &Client) -> Result<()> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RootBackend {
+    Magisk,
+    KernelSu,
+}
+
+fn parse_backend(text: &str) -> Result<RootBackend> {
+    let mut lines = text.lines();
+    match lines.next() {
+        Some("MAGISK") if lines.any(|line| !line.trim().is_empty()) => Ok(RootBackend::Magisk),
+        Some("KERNELSU") => {
+            let fields: std::collections::BTreeMap<_, _> =
+                lines.filter_map(|line| line.split_once(": ")).collect();
+            ensure!(
+                fields
+                    .get("version")
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .is_some_and(|v| v > 0)
+                    && fields
+                        .get("uapi_version")
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .is_some_and(|v| v >= 6)
+                    && fields
+                        .get("runtime_mode")
+                        .is_some_and(|v| matches!(*v, "built-in" | "lkm")),
+                "KernelSU did not report an active supported kernel interface"
+            );
+            Ok(RootBackend::KernelSu)
+        }
+        _ => anyhow::bail!("No supported root module backend was detected"),
+    }
+}
+
+fn require_root(adb: &Client) -> Result<RootBackend> {
     ensure!(
         adb.idempotent_root("id -u")
-            .context("Launcher isolation and Android hosts filtering require working Magisk root in the selected instance. Open Root BlueStacks to install or check it")?
+            .context("Network controls require root in the selected instance. With KernelSU, grant Shell root in KernelSU Manager; with Magisk, use Root BlueStacks to check it")?
             .trim() == "0",
-        "This option requires working Magisk root in the selected instance. Open Root BlueStacks to install or check it"
+        "This option requires working KernelSU or Magisk root in the selected instance"
     );
-    ensure!(
-        !adb.idempotent_root("magisk -v")?.trim().is_empty(),
-        "Magisk is required to keep these changes across reboots"
-    );
-    Ok(())
+    let backend = parse_backend(&adb.idempotent_root(
+        "if [ -x /data/adb/ksud ]; then printf 'KERNELSU\\n'; /data/adb/ksud debug info; else printf 'MAGISK\\n'; magisk -v; fi",
+    )?)?;
+    if backend == RootBackend::KernelSu {
+        let active = adb.idempotent_root("test \"$(readlink -f /data/adb/metamodule)\" = /data/adb/modules/magic_mount_rs && test ! -e /data/adb/modules/magic_mount_rs/disable && test ! -e /data/adb/modules/magic_mount_rs/remove && /data/adb/modules/magic_mount_rs/meta-mm version")
+            .context("KernelSU network modules require an enabled Magic Mount-rs metamodule")?;
+        let version: serde_json::Value = serde_json::from_str(&active)?;
+        ensure!(
+            version["version"].as_str().is_some_and(|v| !v.is_empty()),
+            "Magic Mount-rs version query failed"
+        );
+    }
+    Ok(backend)
 }
 fn launcher_uid(adb: &Client) -> Result<u32> {
     let dump = adb.idempotent_shell("dumpsys package com.uncube.launcher3")?;
@@ -110,7 +151,7 @@ pub fn read(adb: &Client) -> Result<Value> {
 }
 pub fn write(adb: &Client, value: &Value) -> Result<()> {
     adb.verify_identity()?;
-    require_root(adb)?;
+    let backend = require_root(adb)?;
     match value {
         Value::Missing => {
             if read(adb)? == Value::Missing {
@@ -136,6 +177,12 @@ pub fn write(adb: &Client, value: &Value) -> Result<()> {
             );
             if let Some(hosts) = &policy.hosts {
                 script.push_str(&format!("printf %s {} > {stage}/system/etc/hosts\nchmod 0644 {stage}/system/etc/hosts\n",quote(hosts)));
+            }
+            if backend == RootBackend::KernelSu {
+                // KernelSU only relabels otherwise-unlabeled module files.
+                // A newly created staging directory inherits ksu_file, which
+                // must not become the label of a mounted system hosts file.
+                script.push_str(&format!("chcon -R u:object_r:system_file:s0 {stage}\n"));
             }
             if previous != Value::Missing {
                 script.push_str(&format!("test ! -e {old}\nmv {MODULE} {old}\nif ! mv {stage} {MODULE}; then mv {old} {MODULE}; exit 1; fi\nrm -rf {old}\ntrap - EXIT\n"));
@@ -193,11 +240,37 @@ pub fn operation(adb: &Client, hosts: bool, isolate: bool) -> Result<Option<Oper
     }
     Ok(Some(Operation {
         label: format!(
-            "Install per-instance Magisk module: Android hosts={}, launcher network isolation={isolate}",
+            "Install per-instance root module: Android hosts={}, launcher network isolation={isolate}",
             policy.hosts.is_some()
         ),
         target: Target::RootModule,
         before,
         after,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_backend_requires_a_live_kernel_interface() {
+        assert_eq!(
+            parse_backend("MAGISK\n31.1:MAGISK:R\n").unwrap(),
+            RootBackend::Magisk
+        );
+        assert_eq!(
+            parse_backend("KERNELSU\nversion: 33457\nuapi_version: 6\nruntime_mode: built-in\n")
+                .unwrap(),
+            RootBackend::KernelSu
+        );
+        for invalid in [
+            "MAGISK\n",
+            "KERNELSU\n",
+            "KERNELSU\nversion: 0\nuapi_version: 6\nruntime_mode: built-in\n",
+            "KERNELSU\nversion: 33457\nuapi_version: 0\nruntime_mode: built-in\n",
+        ] {
+            assert!(parse_backend(invalid).is_err());
+        }
+    }
 }

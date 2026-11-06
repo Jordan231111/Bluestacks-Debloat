@@ -96,7 +96,7 @@ enum Action {
         #[arg(long)]
         start_offline: bool,
     },
-    /// Optional Magisk module for Android hosts and launcher-only network filtering.
+    /// Optional root module for Android hosts and launcher-only network filtering.
     RootNetwork {
         #[arg(long)]
         apply: bool,

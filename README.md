@@ -29,15 +29,17 @@ The interface adapts to smaller windows and Windows display scaling, with adjust
 3. **Review, then apply using the fixed bottom bar.** Apply closes BlueStacks and its companions automatically, saves recovery copies, and verifies the changes.
 4. **Open Android apps**, enable local ADB, and scan the selected instances. Stopped instances can start and close one at a time; already running players stay open. Select apps, Review, then Apply. Network root controls and Root BlueStacks use the single-instance picker.
 
+Already using **KernelSU**? Enable **Shell** in KernelSU Manager and keep **Magic Mount-rs** enabled before using Network root controls. The **Root BlueStacks** tab installs Magisk; leave it alone on a KernelSU instance.
+
 Maximum selects options across tabs and includes a reversible player patch to keep feature choices after restart; apply each stage when prompted. Use **Backups & restore** to undo debloat changes, or the Root tab for disk recovery.
 
 If one independent option fails, successful changes stay applied. The app shows what applied, failed or was skipped. Related cloud-removal steps and root-installation stages stay together for recovery.
 
 ## Before you use it
 
-- Latest live validation: **BlueStacks 5.22.288.1014 / Android 13**, including Maximum, Android apps, fresh Magisk root and both network controls through two full restarts. Earlier **5.22.265.1013** validation covered Nougat 32/64-bit and Android 9/11/13 batches, persistence and restore. See the [validation record](docs/VALIDATION.md) for exact scope.
+- Latest live validation: **BlueStacks 5.22.288.1014 / Android 13**, including Maximum, Android apps and both network controls with KernelSU; the earlier Magisk installation and restart checks also remain documented. Earlier **5.22.265.1013** validation covered Nougat 32/64-bit and Android 9/11/13 batches, persistence and restore. See the [validation record](docs/VALIDATION.md) for exact scope.
 - Rooting and binary patching are optional advanced features. Some games reject rooted devices. A higher FPS limit does not guarantee higher performance and can increase power use.
-- Launcher isolation also disables its online recommendations, search, and Store features. It requires Magisk root.
+- Launcher isolation also disables its online recommendations, search, and Store features. It requires Magisk, or KernelSU with an active Magic Mount-rs metamodule.
 - Recovery copies use disk space. Unfinished or damaged recovery points stay visible for inspection. Root recovery restores data to its saved point in time. This release is unsigned.
 
 ## Learn more

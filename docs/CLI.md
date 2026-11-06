@@ -45,3 +45,7 @@ Completed recovery points are automatically limited to the newest three recovery
 `root install --repair --apply` performs the full repair pipeline even when root already works. `root full-unroot --apply` restores every original shared master and the shared player; read the [rooting guide](ROOTING.md) first.
 
 For backup location, restore order, and troubleshooting, see the [runbook](RUNBOOK.md).
+
+## KernelSU network backend
+
+`root-network` accepts Magisk or a verified KernelSU runtime (built-in or LKM, UAPI 6 or newer) with an active Magic Mount-rs metamodule. Authorize Shell in the corresponding Manager first. `root install` remains the Magisk installer and is not a KernelSU installation command.

@@ -42,7 +42,7 @@ Use **Backups & restore** and select the exact operation. Restore recent overlap
 
 If power is lost, an `applying` journal records the operation that may have been interrupted. Restore checks both the saved before and after states and can resume repeatedly. Do not edit journals or move/delete recovery folders while you need rollback.
 
-Android backups include the exact instance and a hashed Android identity. Start that same instance before restoring. An instance recreated under the same name is rejected if its identity differs. Root-network restore removes the owned firewall chain immediately; reboot Android to remove an active hosts overlay. It does not unroot the instance or remove another Magisk module.
+Android backups include the exact instance and a hashed Android identity. Start that same instance before restoring. An instance recreated under the same name is rejected if its identity differs. Root-network restore removes the owned firewall chain immediately; reboot Android to remove an active hosts overlay. It does not unroot the instance or remove another root module.
 
 ## Troubleshooting
 
@@ -52,7 +52,7 @@ Android backups include the exact instance and a hashed Android identity. Start 
 | Instance offline | Start the selected instance and wait for its home screen. |
 | ADB port belongs to another instance | Refresh after boot. Do not assume every configured `5555` belongs to the selected instance. |
 | Configured ADB port is already in use | Stop the instance or application using that port, or clone the instance in Multi-instance Manager to obtain an independent port. Fresh Nougat masters can both default to 5555. The queue refuses the conflicting startup before launching it. |
-| Root denied / timed out | Grant the normal Magisk shell request in that instance, then retry; basic debloat remains available without root. |
+| Root denied / timed out | Grant Shell in KernelSU Manager, or approve the normal Magisk shell request in that instance, then retry. Basic debloat remains available without root. |
 | Shutdown cannot be verified | No offline changes start. The error identifies the process/service that Windows could not stop. |
 | Cloud file in use after automatic shutdown | Retry after the reported lock is released; completed changes are rolled back and recovery is retained. |
 | Preview became stale | Refresh and preview again. |
@@ -65,3 +65,7 @@ Network reports and Android screenshots are saved locally under the app's data f
 For root installation, repair, unroot and full disk recovery, use the [rooting runbook](ROOTING.md). The Root tab performs shutdown, staged installation and verification in one operation. Its large disk recovery copies are distinct from ordinary debloat backups.
 
 On a small laptop display, navigation moves to the top and controls stack vertically. Use the Text selector for 100–200% text sizing; scroll within the page for additional options. Windows DPI scaling remains active. Selecting **Maximum debloat** does not alter CPU/RAM allocations; those are explicitly manual controls.
+
+## Existing KernelSU installations
+
+Use Network root controls after enabling Shell in KernelSU Manager. The supported backend requires KernelSU UAPI 6 or newer and an active Magic Mount-rs metamodule. The app checks the running backend before changing anything. Apply Maximum and Android apps normally; do not use Root BlueStacks to install Magisk over KernelSU. Restoring a network operation removes only this app's recorded module and firewall state.

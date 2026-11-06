@@ -1,5 +1,17 @@
 # Validation record
 
+## 1.1.2 KernelSU compatibility — 2026-11-06
+
+Tested on BlueStacks **5.22.288.1014 / Android 13**, App Player 3, with KernelSU-Next 33457, canonical SUSFS 2.3.0 and SELinux enforcing. Maximum host and Android changes were applied before the final KernelSU installation; Magisk installation was excluded.
+
+- Maximum host settings, reviewed Android packages and animations, Android hosts filtering and launcher IPv4/IPv6 isolation were applied and inspected. Network restore and reapply succeeded.
+- Fixed-version detection remained correct with both supported Debloat player edits and the KernelSU lifecycle patch present.
+- Hosts filtering and launcher isolation survived repeated Android reboots and a cold KernelSU update. Final previews for all three stages returned **zero changes and zero issues**.
+- Root-network detection validated actual UID 0, the KernelSU runtime and the active Magic Mount-rs backend. The owned module files use `system_file` labels under enforcing SELinux.
+- Formatting, Clippy with warnings denied and **104 tests** passed. The existing Magisk installation workflow was not rerun for this compatibility change; its earlier results remain below.
+
+Private integration records are in the KernelSU-BlueStacks workspace under `.work/incident-v020`, including the final `release-debloat-*-preview.json` files. This is a measured compatibility profile, not a promise for every emulator build or mount backend.
+
 ## 1.1.1 Android 13 live verification — 2026-11-05
 
 This run used **BlueStacks 5.22.288.1014**, launcher **10.42.288.1001**, and the installed **Tiramisu64 / Android 13** instance. Successful changes were left applied, as requested; no restore/unroot cycle was performed in this run.

@@ -702,7 +702,13 @@ impl App {
         ui.label(RichText::new("These are the only hostnames on the blocklist. Google Play, Google services and game domains remain allowed. Enable the PC option under Debloat & tune, or use the per-instance option below.").color(MUTED));
         ui.add_space(16.0);
         ui.separator();
-        ui.strong("Advanced Android filtering (Magisk root required)");
+        ui.strong("Advanced Android filtering (KernelSU or Magisk root required)");
+        ui.label(
+            RichText::new(
+                "KernelSU: grant Shell root in its Manager and keep Magic Mount-rs enabled.",
+            )
+            .color(MUTED),
+        );
         if ui
             .checkbox(
                 &mut self.root_hosts,

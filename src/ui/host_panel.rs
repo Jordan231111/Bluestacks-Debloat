@@ -35,7 +35,7 @@ impl App {
         ui.strong("Shared PC & BlueStacks controls");
         ui.checkbox(&mut self.options.ads, "Disable BlueStacks ad controls");
         ui.label(RichText::new("Shared ad flags affect all instances. Gameplay-ad preferences apply to checked instances.").small().color(MUTED));
-        ui.label(RichText::new("The home screen's 'Popular games to play' row uses the launcher. See Network for launcher isolation (Magisk required).").small().color(MUTED));
+        ui.label(RichText::new("The home screen's 'Popular games to play' row uses the launcher. See Network for launcher isolation (KernelSU or Magisk required).").small().color(MUTED));
         ui.checkbox(
             &mut self.options.telemetry,
             "Disable BlueStacks statistics reporting",
@@ -106,7 +106,7 @@ impl App {
         if self.maximum_selected && self.options.performance == Performance::Keep {
             egui::Frame::group(ui.style()).inner_margin(12.0).show(ui,|ui|{
             ui.strong("Maximum · CPU and RAM kept as they are");ui.label("Selects reviewed cleanup, cloud removal, GPU / high-FPS options, Android options and BlueStacks-only network controls. Includes a reversible player patch to keep feature choices after restart. Rooting remains separate.");
-            ui.label(RichText::new("Apply host changes using the bottom bar, then finish Android apps and Network. Root-only filtering needs Magisk.").color(MUTED));
+            ui.label(RichText::new("Apply host changes using the bottom bar, then finish Android apps and Network. Root-only filtering needs KernelSU or Magisk.").color(MUTED));
         });
         }
         ui.add_space(10.0);

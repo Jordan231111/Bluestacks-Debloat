@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.2 — 2026-11-06
+
+- Support the Network tab's hosts filter and launcher isolation on KernelSU with an active Magic Mount-rs metamodule, alongside the existing Magisk backend.
+- Check real shell root, KernelSU UAPI/runtime and the active mount backend before applying changes; no Magisk placeholder is installed.
+- Label the owned network module correctly for SELinux enforcing and explain how to authorize Shell in KernelSU Manager.
+- Verify maximum debloat, version detection, both network controls, persistence and reversible network changes on BlueStacks 5.22.288.1014 / Android 13 with KernelSU.
+
 ## 1.1.1 — 2026-11-05
 
 - Recover interrupted Android package and animation writes with bounded retries, instance identity checks before every attempt, and exact read-back verification.
